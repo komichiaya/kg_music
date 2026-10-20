@@ -93,7 +93,7 @@ async function playAll() {
   <PageShell
     eyebrow="Artist"
     title="歌手"
-    :subtitle="detail ? detail.intro ||  '正在加载歌手信息…'"
+    :subtitle="detail ? detail.intro :  '正在加载歌手信息…'"
   >
     <template #actions>
       <button v-if="tracks.length > 0" class="brand-button" type="button" @click="playAll">
@@ -128,7 +128,6 @@ async function playAll() {
             <span class="stat__label">MV</span>
           </li>
         </ul>
-        <p class="head__gid tabular">author_id {{ authorId }}</p>
       </div>
     </section>
 

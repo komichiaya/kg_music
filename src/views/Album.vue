@@ -80,7 +80,7 @@ async function playAll() {
   <PageShell
     eyebrow="Album"
     title="专辑"
-    :subtitle="detail ? detail.intro ||  '正在加载专辑信息…'"
+    :subtitle="detail ? detail.intro :  '正在加载专辑信息…'"
   >
     <template #actions>
       <button v-if="tracks.length > 0" class="brand-button" type="button" @click="playAll">
