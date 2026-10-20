@@ -1,0 +1,231 @@
+/**
+ * 玻璃拟态基础组件（文档 §5.4）
+ *
+ * .panel       内容卡片：模糊 + 半透明 + 1px 描边 + 内高光
+ * .pill        状态胶囊，用于服务状态 / 标签
+ * .icon-button 圆形图标按钮
+ * .ghost-link  文本型次级操作
+ */
+
+.panel {
+  position: relative;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--stroke);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0) 42%),
+    var(--glass);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+}
+
+:root[data-theme='light'] .panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.4) 42%),
+    var(--glass);
+}
+
+.panel--interactive {
+  transition:
+    transform var(--dur) var(--ease),
+    border-color var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.panel--interactive:hover {
+  transform: translateY(-2px);
+  border-color: var(--stroke-strong);
+  box-shadow: var(--shadow-2);
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke);
+  background: rgba(255, 255, 255, 0.04);
+  font-size: 12px;
+  line-height: 1;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
+.pill::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.9;
+}
+
+.pill--plain::before {
+  display: none;
+}
+
+.pill--ok {
+  color: var(--ok);
+  border-color: rgba(52, 211, 153, 0.28);
+  background: rgba(52, 211, 153, 0.1);
+}
+
+.pill--warn {
+  color: var(--warn);
+  border-color: rgba(251, 191, 36, 0.28);
+  background: rgba(251, 191, 36, 0.1);
+}
+
+.pill--err {
+  color: var(--err);
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(248, 113, 113, 0.1);
+}
+
+.pill--muted {
+  color: var(--text-3);
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  color: var(--text-2);
+  transition:
+    color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    transform var(--dur-fast) var(--ease);
+}
+
+.icon-button:hover {
+  color: var(--text-1);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.icon-button:active {
+  transform: scale(0.94);
+}
+
+.icon-button--active {
+  color: var(--brand-1);
+  background: var(--brand-soft);
+}
+
+.icon-button:disabled {
+  color: var(--text-3);
+  cursor: not-allowed;
+  background: none;
+}
+
+.ghost-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-2);
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.ghost-link:hover {
+  color: var(--brand-1);
+}
+
+/* 渐变主按钮：与 Element Plus 主色衔接，但保留品牌渐变质感 */
+.brand-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 20px;
+  border-radius: 999px;
+  background: var(--brand-grad);
+  color: #06121a;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: 0 10px 28px rgba(45, 127, 249, 0.28);
+  transition:
+    filter var(--dur) var(--ease),
+    transform var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.brand-button:hover {
+  filter: brightness(1.06);
+  box-shadow: 0 14px 34px rgba(45, 127, 249, 0.36);
+}
+
+.brand-button:active {
+  transform: translateY(1px);
+}
+
+.brand-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.ghost-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid var(--stroke-strong);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-1);
+  font-size: 13px;
+  transition:
+    border-color var(--dur) var(--ease),
+    background-color var(--dur) var(--ease);
+}
+
+.ghost-button:hover {
+  border-color: var(--brand-1);
+  background: var(--brand-soft);
+}
+
+/* 与 brand-button 对齐：禁用态必须可辨识，否则请求进行中会被误认为可再次点击 */
+.ghost-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ghost-button:disabled:hover {
+  border-color: var(--stroke-strong);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.section {
+  margin-top: 36px;
+}
+
+.section__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.section__title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.section__hint {
+  font-size: 12px;
+  color: var(--text-3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}

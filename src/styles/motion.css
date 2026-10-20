@@ -1,0 +1,137 @@
+/**
+ * 动效层（文档 §5.4 / §5.6）
+ *
+ * 原则：动效服务于内容，时长 120–480ms，不使用弹跳曲线；
+ * 尊重 prefers-reduced-motion，用户要求减少动效时全部降级为静态。
+ */
+
+/* ---------- 页面切换 ---------- */
+
+.page-enter-active,
+.page-leave-active {
+  transition:
+    opacity var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+
+.page-enter-from {
+  opacity: 0;
+  transform: translate3d(0, 10px, 0);
+}
+
+.page-leave-to {
+  opacity: 0;
+  transform: translate3d(0, -6px, 0);
+}
+
+/* ---------- 极光背景漂移 ---------- */
+
+@keyframes aurora-drift {
+  0% {
+    transform: translate3d(-4%, -2%, 0) scale(1);
+  }
+  50% {
+    transform: translate3d(6%, 4%, 0) scale(1.12);
+  }
+  100% {
+    transform: translate3d(-2%, 6%, 0) scale(0.96);
+  }
+}
+
+@keyframes aurora-drift-reverse {
+  0% {
+    transform: translate3d(3%, 4%, 0) scale(1.04);
+  }
+  50% {
+    transform: translate3d(-6%, -3%, 0) scale(0.94);
+  }
+  100% {
+    transform: translate3d(2%, -6%, 0) scale(1.1);
+  }
+}
+
+/* ---------- 唱片旋转 ---------- */
+
+@keyframes vinyl-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- 骨架屏呼吸 ---------- */
+
+@keyframes skeleton-breathe {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+
+.skeleton {
+  border-radius: var(--r-sm);
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0.04) 20%,
+    rgba(255, 255, 255, 0.1) 38%,
+    rgba(255, 255, 255, 0.04) 56%
+  );
+  background-size: 220% 100%;
+  animation: skeleton-breathe 2.4s ease-in-out infinite;
+}
+
+:root[data-theme='light'] .skeleton {
+  background: linear-gradient(
+    100deg,
+    rgba(15, 23, 42, 0.05) 20%,
+    rgba(15, 23, 42, 0.1) 38%,
+    rgba(15, 23, 42, 0.05) 56%
+  );
+}
+
+/* ---------- 列表错峰进入 ---------- */
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 12px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rise-in {
+  animation: rise-in var(--dur-slow) var(--ease) both;
+}
+
+.rise-in--1 {
+  animation-delay: 40ms;
+}
+
+.rise-in--2 {
+  animation-delay: 90ms;
+}
+
+.rise-in--3 {
+  animation-delay: 140ms;
+}
+
+/* ---------- 减少动效 ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

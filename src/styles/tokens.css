@@ -1,0 +1,110 @@
+/**
+ * 设计令牌（文档 §5.2）
+ *
+ * 唯一色彩/间距/动效来源。组件只允许引用变量，不允许出现裸色值，
+ * 否则亮色主题与后续换肤都会失效。
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* 中性 / 背景层 */
+  --bg-0: #0b0e14;
+  --bg-1: #11151f;
+  --bg-2: #161b27;
+  --bg-3: #1d2432;
+  --glass: rgba(22, 27, 39, 0.55);
+  --glass-strong: rgba(22, 27, 39, 0.82);
+  --stroke: rgba(255, 255, 255, 0.08);
+  --stroke-strong: rgba(255, 255, 255, 0.14);
+
+  /* 品牌强调 */
+  --brand-1: #2ce6e6;
+  --brand-2: #2d7ff9;
+  --brand-soft: rgba(44, 230, 230, 0.12);
+  --brand-grad: linear-gradient(135deg, #2ce6e6, #2d7ff9);
+
+  /* 文本 */
+  --text-1: #f2f5fa;
+  --text-2: #a6aec0;
+  --text-3: #6b7280;
+
+  /* 功能色 */
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --err: #f87171;
+
+  /* 圆角 */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 14px;
+  --r-lg: 20px;
+  --r-xl: 28px;
+
+  /* 阴影 */
+  --shadow-1: 0 8px 32px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 24px 64px rgba(0, 0, 0, 0.45);
+  --glow-brand: 0 0 0 1px rgba(44, 230, 230, 0.35), 0 12px 40px rgba(45, 127, 249, 0.18);
+
+  /* 动效 */
+  --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --dur-fast: 120ms;
+  --dur: 220ms;
+  --dur-slow: 480ms;
+
+  /* 布局 */
+  --titlebar-h: 42px;
+  --sidebar-w: 232px;
+  --sidebar-w-collapsed: 76px;
+  --playerbar-h: 92px;
+  --stage-pad: 32px;
+
+  /* 字体（文档 §5.3） */
+  --font-sans: 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Consolas, 'Liberation Mono', monospace;
+}
+
+/* 亮色主题：暗色优先，此处为可选跟随（文档 §5.1） */
+:root[data-theme='light'] {
+  color-scheme: light;
+
+  --bg-0: #f4f6fb;
+  --bg-1: #ffffff;
+  --bg-2: #eef2f9;
+  --bg-3: #e4eaf4;
+  --glass: rgba(255, 255, 255, 0.66);
+  --glass-strong: rgba(255, 255, 255, 0.88);
+  --stroke: rgba(15, 23, 42, 0.08);
+  --stroke-strong: rgba(15, 23, 42, 0.16);
+
+  --brand-1: #0fb4c4;
+  --brand-2: #2d7ff9;
+  --brand-soft: rgba(15, 180, 196, 0.12);
+
+  --text-1: #0f172a;
+  --text-2: #4a5568;
+  --text-3: #8a94a6;
+
+  --shadow-1: 0 8px 32px rgba(15, 23, 42, 0.08);
+  --shadow-2: 0 24px 64px rgba(15, 23, 42, 0.12);
+}
+
+/* Element Plus 变量桥接：让 UI 库与自绘组件共用同一套色板 */
+:root,
+html.dark {
+  --el-color-primary: var(--brand-1);
+  --el-color-success: var(--ok);
+  --el-color-warning: var(--warn);
+  --el-color-danger: var(--err);
+  --el-bg-color: var(--bg-1);
+  --el-bg-color-overlay: var(--bg-2);
+  --el-fill-color-blank: var(--bg-2);
+  --el-text-color-primary: var(--text-1);
+  --el-text-color-regular: var(--text-2);
+  --el-text-color-secondary: var(--text-3);
+  --el-border-color: var(--stroke);
+  --el-border-color-light: var(--stroke);
+  --el-border-radius-base: var(--r-sm);
+  --el-font-family: var(--font-sans);
+}
