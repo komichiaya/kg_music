@@ -60,6 +60,11 @@ export interface PlaylistSummary {
   creator: string
   intro: string
   mine: boolean
+  /**
+   * 歌单总版本号，`/playlist/update` 的必选参数。
+   * 由 `/user/playlist` 返回，缺失时更新接口可能报版本冲突，调用方需容错。
+   */
+  totalVer?: string
 }
 
 /** 专辑详情（/album/detail），曲目由 /album/songs 单独拉取 */
@@ -153,12 +158,31 @@ export type PlayMode = 'order' | 'single' | 'random'
 /** 主题偏好 */
 export type ThemeMode = 'dark' | 'light' | 'system'
 
+/**
+ * 主题风格（与明暗主题正交）
+ * - aurora：极光渐变，动态光晕 + 玻璃质感（默认）
+ * - minimal：极简，亮色纯白、暗色纯黑，扁平描边
+ */
+export type ThemeStyle = 'aurora' | 'minimal'
+
 /** 归一化后的曲目结构，字段命名对齐上游 song 搜索结果 */
+export interface TrackArtist {
+  /** 缺失时该歌手只展示、不可跳转（宁可不跳，也不指错人） */
+  id?: string
+  name: string
+}
+
 export interface Track {
   /** 歌曲 hash（128K 版本），同时作为队列内唯一标识 */
   hash: string
   name: string
   singer: string
+  /**
+   * 歌手列表（按上游顺序）。多歌手时每项可独立跳转；
+   * 只有 `singer` 一个拼接串的来源（如部分搜索结果）会按名字数量与 id 数组对齐，
+   * 对不上时只给 name 不给 id。
+   */
+  artists?: TrackArtist[]
   album: string
   albumId?: string | number
   /** 歌手 id（author_id / SingerId 等），用于跳转歌手页；缺失时详情页不提供跳转 */
@@ -173,6 +197,12 @@ export interface Track {
   /** 版权标记：8/10 之类的上游值，仅用于列表角标 */
   privilege?: number
   payType?: number
+  /**
+   * 歌单内曲目 id，仅 `/playlist/track/all` 的返回带这个字段。
+   * 从歌单里删歌必须用它（`/playlist/tracks/del` 只认 fileid，不认 hash），
+   * 搜索结果等其他来源没有，因此为可选。
+   */
+  fileid?: string
 }
 
 /** 上游守护进程状态 */
@@ -217,6 +247,9 @@ export interface KugouBridge {
     toggleMaximize: () => Promise<boolean>
     close: () => void
     isMaximized: () => Promise<boolean>
+    /** 切换迷你播放器窗口，返回切换后的状态 */
+    setMini: (enabled: boolean) => Promise<boolean>
+    isMini: () => Promise<boolean>
     onMaximizeChange: (cb: (maximized: boolean) => void) => () => void
   }
   credential: {

@@ -13,15 +13,21 @@ import Backdrop from '@/components/layout/Backdrop.vue'
 import TitleBar from '@/components/layout/TitleBar.vue'
 import Sidebar from '@/components/layout/Sidebar.vue'
 import PlayerBar from '@/components/player/PlayerBar.vue'
+import MiniPlayer from '@/components/player/MiniPlayer.vue'
 import PlaylistPicker from '@/components/common/PlaylistPicker.vue'
+import ArtistPicker from '@/components/common/ArtistPicker.vue'
+import ContextMenu from '@/components/common/ContextMenu.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useSettingsStore } from '@/stores/settings'
 import { usePlayerStore } from '@/stores/player'
 import { useLyricStore } from '@/stores/lyric'
 import { useCheckinStore } from '@/stores/checkin'
+import { usePlaylistPickerStore } from '@/stores/playlistPicker'
 import { useUpstream } from '@/composables/useUpstream'
+import { useShortcuts } from '@/composables/useShortcuts'
 import { getBridge } from '@/bridge'
 import { wordFill } from '@/utils/lyric'
+import { BRAND_PALETTE, applyCoverPalette, extractPalette } from '@/utils/palette'
 import type { DesktopLyricPayload } from '@/types/kugou'
 
 const route = useRoute()
@@ -31,10 +37,13 @@ const settings = useSettingsStore()
 const player = usePlayerStore()
 const lyric = useLyricStore()
 const checkin = useCheckinStore()
+const picker = usePlaylistPickerStore()
 const { healthy: upstreamHealthy } = useUpstream()
 
 const isBlank = computed(() => route.meta.blank === true)
 const isTransparent = computed(() => route.meta.transparent === true)
+/** 迷你模式只在主窗口生效；登录页与桌面歌词窗口不参与 */
+const isMini = computed(() => settings.miniMode && !isBlank.value && !isTransparent.value)
 
 /** 把当前行与相邻两行推给桌面歌词窗口（含逐字填充比例） */
 let lastPushAt = 0
@@ -72,12 +81,25 @@ function pushDesktopLyric(force = false) {
 // ---------------- 主窗口专属逻辑 ----------------
 
 if (!isTransparent.value) {
+  useShortcuts()
+
   onMounted(() => {
     settings.applyTheme()
     player.setQuality(settings.quality)
     player.setMode(settings.playbackMode)
     // 守卫里已调用过 boot，这里兜底：直接进入非受限页时也能恢复登录态
     if (!auth.booted) void auth.boot()
+
+    // 渲染层热重载后 Main 可能仍处于迷你形态，这里同步一次避免「小窗里塞满主界面」
+    const bridge = getBridge()
+    if (bridge) {
+      void bridge.window
+        .isMini()
+        .then((mini) => {
+          if (mini !== settings.miniMode) settings.miniMode = mini
+        })
+        .catch(() => undefined)
+    }
   })
 
   // 设置页改音质 → 立即用新音质重载当前曲；播放栏切模式 → 回写偏好
@@ -85,6 +107,14 @@ if (!isTransparent.value) {
     () => settings.quality,
     (next) => {
       void player.setQuality(next)
+    }
+  )
+
+  // 播放栏也能切音质：回写偏好，否则重启后会退回设置页里的旧值（模式同理）
+  watch(
+    () => player.quality,
+    (next) => {
+      settings.quality = next
     }
   )
 
@@ -100,6 +130,25 @@ if (!isTransparent.value) {
     () => player.current?.hash,
     () => {
       void lyric.load(player.current)
+    },
+    { immediate: true }
+  )
+
+  /**
+   * 封面主色：随当前曲目更新极光背景。
+   * 提取是异步的，用 token 丢弃过期结果，避免快速切歌时颜色错位。
+   */
+  let paletteToken = 0
+  watch(
+    () => player.current?.cover,
+    async (cover) => {
+      if (!cover) {
+        applyCoverPalette(null, BRAND_PALETTE)
+        return
+      }
+      const token = ++paletteToken
+      const palette = await extractPalette(cover)
+      if (token === paletteToken) applyCoverPalette(cover, palette)
     },
     { immediate: true }
   )
@@ -140,6 +189,8 @@ if (!isTransparent.value) {
     ([loggedIn, checked]) => {
       if (!loggedIn) {
         checkin.reset()
+        // 会话失效会跳到登录页，迷你小窗放不下登录表单，先恢复普通窗口
+        if (settings.miniMode) void settings.setMini(false)
         return
       }
       if (checked) void checkin.run()
@@ -157,10 +208,14 @@ if (!isTransparent.value) {
     }
   )
 
+  /** 迷你模式下弹框会超出 380×120 的可视区，进入时先关掉 */
+  watch(isMini, (mini) => {
+    if (mini) picker.close()
+  })
+
   /** 设置开关 ⇄ 桌面歌词窗口 */
   watch(
-    () => settings.lyricDesktop,
-    async (enabled) => {
+    () => settings.lyricDesktop,    async (enabled) => {
       const bridge = getBridge()
       if (!bridge) return
       try {
@@ -188,24 +243,36 @@ if (!isTransparent.value) {
 </script>
 
 <template>
-  <div class="app" :class="{ 'app--blank': isBlank, 'app--transparent': isTransparent }">
+  <div
+    class="app"
+    :class="{ 'app--blank': isBlank, 'app--transparent': isTransparent, 'app--mini': isMini }"
+  >
     <Backdrop v-if="!isTransparent" />
 
     <template v-if="!isBlank">
-      <TitleBar />
-      <div class="app__body">
-        <Sidebar />
-        <main class="app__stage">
-          <RouterView v-slot="{ Component }">
-            <Transition name="page" mode="out-in">
-              <component :is="Component" />
-            </Transition>
-          </RouterView>
-        </main>
+      <!-- 迷你模式只隐藏主界面而不卸载，返回时保留当前页面与滚动位置 -->
+      <div v-show="!isMini" class="app__shell">
+        <TitleBar />
+        <div class="app__body">
+          <Sidebar />
+          <main class="app__stage">
+            <RouterView v-slot="{ Component }">
+              <Transition name="page" mode="out-in">
+                <component :is="Component" />
+              </Transition>
+            </RouterView>
+          </main>
+        </div>
+        <PlayerBar />
+        <!-- 全局单例：任何页面通过 playlistPicker store 唤起「添加到歌单」 -->
+        <PlaylistPicker />
+        <!-- 全局单例：多歌手歌曲右键「跳转到歌手」时选择具体歌手 -->
+        <ArtistPicker />
+        <!-- 全局单例右键菜单：曲目行 / 侧栏歌单通过 contextMenu store 唤起 -->
+        <ContextMenu />
       </div>
-      <PlayerBar />
-      <!-- 全局单例：任何页面通过 playlistPicker store 唤起「添加到歌单」 -->
-      <PlaylistPicker />
+
+      <MiniPlayer v-if="isMini" />
     </template>
 
     <RouterView v-else />
@@ -223,6 +290,14 @@ if (!isTransparent.value) {
 
 .app--transparent {
   background: transparent;
+}
+
+.app__shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  height: 100%;
 }
 
 .app__body {

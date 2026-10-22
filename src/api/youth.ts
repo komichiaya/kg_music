@@ -53,9 +53,13 @@ function extractExpireAt(data: unknown): string | null {
         continue
       }
       if (!keys.some((candidate) => key.toLowerCase().includes(candidate))) continue
-      if (typeof value === 'string' && value.trim()) return value.trim()
-      if (typeof value === 'number' && Number.isFinite(value)) {
-        // 秒级时间戳需要转毫秒
+      if (typeof value === 'string' && value.trim()) {
+        // 非会员 / 领取失败时上游会给 "0"
+        if (value.trim() === '0') continue
+        return value.trim()
+      }
+      if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+        // 秒级时间戳需要转毫秒；0 会被 Date 解析成 1970，直接跳过
         const ms = value > 1e12 ? value : value * 1000
         return new Date(ms).toISOString()
       }

@@ -2,6 +2,12 @@
 /**
  * 搜索页（文档 §3.3）
  *
+ * 关键词的唯一来源是地址栏 `?q=`：本页不再有输入框，也不再渲染「初始界面」
+ * （搜索历史 / 热门搜索已移到标题栏搜索框的下拉面板）。输入动作全部发生在标题栏，
+ * 本页只负责「按 q 取结果 + 分类展示」。
+ *
+ * 因此没有 q 时本页没有可展示的内容，直接回发现页。
+ *
  * 四类结果均已接通：
  * - 单曲：整列可播（TrackTable）
  * - 歌单：卡片 → 跳歌单详情（gid）
@@ -27,6 +33,8 @@ import {
 } from '@/api/search'
 import { ApiError } from '@/api/request'
 import { usePlayerStore } from '@/stores/player'
+import type { Track } from '@/types/kugou'
+import { useSearchHistoryStore } from '@/stores/searchHistory'
 import { formatCount } from '@/utils/format'
 
 type SearchType = 'song' | 'special' | 'author' | 'album'
@@ -41,8 +49,8 @@ const TABS: Array<{ key: SearchType; label: string }> = [
 const route = useRoute()
 const router = useRouter()
 const player = usePlayerStore()
+const searchHistory = useSearchHistoryStore()
 
-const keyword = ref('')
 const activeTab = ref<SearchType>('song')
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -52,13 +60,14 @@ const playlistResult = ref<SearchPage<PlaylistSearchItem> | null>(null)
 const authorResult = ref<SearchPage<AuthorSearchItem> | null>(null)
 const albumResult = ref<SearchPage<AlbumSearchItem> | null>(null)
 
-const hotKeywords = ['夜曲', '周杰伦', '经典老歌', '纯音乐', '粤语金曲', '乐队现场', '睡眠白噪音', '国风']
+/** 当前关键词：只读，唯一来源是地址栏 */
+const query = computed(() => (typeof route.query.q === 'string' ? route.query.q.trim() : ''))
 
 let lastKey = ''
-let lastQuery = ''
 let requestToken = 0
+/** 反查单曲时是程序化切 Tab，跳过 Tab watcher 里那次「用旧关键词重搜」 */
+let skipTabSearch = false
 
-const submitted = computed(() => keyword.value.trim())
 const songTracks = computed(() => songResult.value?.tracks ?? [])
 const resultTotal = computed(() => {
   if (activeTab.value === 'song') return songResult.value?.total ?? 0
@@ -81,17 +90,13 @@ function clearResults() {
 }
 
 async function performSearch(raw: string, force = false) {
-  const query = raw.trim()
-  if (!query) {
-    clearResults()
-    return
-  }
+  const keyword = raw.trim()
+  if (!keyword) return
 
-  const key = `${activeTab.value}:${query}`
+  const key = `${activeTab.value}:${keyword}`
   if (!force && key === lastKey && (loading.value || hasResult.value)) return
 
   lastKey = key
-  lastQuery = query
   const token = ++requestToken
   loading.value = true
   error.value = null
@@ -99,49 +104,52 @@ async function performSearch(raw: string, force = false) {
 
   try {
     if (activeTab.value === 'song') {
-      songResult.value = await searchSongs(query, { pageSize: 30 })
+      songResult.value = await searchSongs(keyword, { pageSize: 30 })
     } else if (activeTab.value === 'special') {
-      playlistResult.value = await searchPlaylists(query, { pageSize: 18 })
+      playlistResult.value = await searchPlaylists(keyword, { pageSize: 18 })
     } else if (activeTab.value === 'author') {
-      authorResult.value = await searchAuthors(query, { pageSize: 18 })
+      authorResult.value = await searchAuthors(keyword, { pageSize: 18 })
     } else {
-      albumResult.value = await searchAlbums(query, { pageSize: 18 })
+      albumResult.value = await searchAlbums(keyword, { pageSize: 18 })
     }
+
+    // 只有真的搜到东西才记历史，避免把「零结果」的词记进去
+    if (hasResult.value) searchHistory.add(keyword)
   } catch (err) {
     if (token !== requestToken) return
-    error.value = err instanceof ApiError ? err.message : '搜索失败，请检查本地服务后重试'
+    error.value = err instanceof ApiError ? err.message : '搜索失败，请稍后重试'
   } finally {
     if (token === requestToken) loading.value = false
   }
 }
 
-function submit(value?: string) {
-  if (typeof value === 'string') keyword.value = value
-  const query = keyword.value.trim()
-  if (!query) return
-  void performSearch(query, true)
-  if (route.query.q !== query) {
-    void router.replace({ name: 'search', query: { q: query } })
-  }
-}
-
+/**
+ * 关键词变化（标题栏提交 / 浏览器前进后退 / 歌手专辑反查）即重搜。
+ * 没有关键词时回发现页 —— 本页已经没有「初始界面」可展示了。
+ */
 watch(
-  () => route.query.q,
+  query,
   (value) => {
-    const query = typeof value === 'string' ? value : ''
-    keyword.value = query
-    if (query) void performSearch(query)
+    if (!value) {
+      void router.replace({ name: 'discover' })
+      return
+    }
+    void performSearch(value, true)
   },
   { immediate: true }
 )
 
 watch(activeTab, () => {
   error.value = null
-  if (lastQuery) void performSearch(lastQuery, true)
+  if (skipTabSearch) {
+    skipTabSearch = false
+    return
+  }
+  if (query.value) void performSearch(query.value, true)
 })
 
-async function playTrack(index: number) {
-  await player.play(songTracks.value[index], songTracks.value)
+async function playTrack(track: Track, queue: Track[]) {
+  await player.play(track, queue)
 }
 
 async function playAll() {
@@ -153,15 +161,33 @@ function openPlaylist(id: string) {
   void router.push({ name: 'playlist', params: { id } })
 }
 
+function retry() {
+  if (query.value) void performSearch(query.value, true)
+}
+
 /** 歌手 / 专辑没有独立详情页，用名称反查单曲 */
 function searchBy(name: string) {
-  activeTab.value = 'song'
-  submit(name)
+  const next = name.trim()
+  if (!next) return
+
+  if (activeTab.value !== 'song') {
+    skipTabSearch = true
+    activeTab.value = 'song'
+  }
+  if (query.value === next) {
+    void performSearch(next, true)
+    return
+  }
+  void router.replace({ name: 'search', query: { q: next } })
 }
 </script>
 
 <template>
-  <PageShell eyebrow="Search" title="搜索" subtitle="单曲、歌单、歌手、专辑四类结果均已接入。">
+  <PageShell
+    eyebrow="Search"
+    :title="query || '搜索'"
+    subtitle="按单曲、歌单、歌手、专辑分类查看，换关键词用顶部搜索框。"
+  >
     <template #actions>
       <span v-if="resultTotal > 0" class="pill pill--plain">共 {{ resultTotal }} 条</span>
       <button v-if="activeTab === 'song' && songTracks.length > 0" class="brand-button" type="button" @click="playAll">
@@ -169,20 +195,6 @@ function searchBy(name: string) {
         播放全部
       </button>
     </template>
-
-    <div class="searchbar panel">
-      <AppIcon name="search" :size="18" />
-      <input
-        v-model="keyword"
-        type="text"
-        placeholder="输入歌曲名、歌手或专辑，回车搜索"
-        spellcheck="false"
-        @keyup.enter="submit()"
-      />
-      <button class="brand-button searchbar__submit" type="button" :disabled="loading" @click="submit()">
-        {{ loading ? '搜索中…' : '搜索' }}
-      </button>
-    </div>
 
     <div class="tabs">
       <button
@@ -199,7 +211,7 @@ function searchBy(name: string) {
 
     <p v-if="error" class="alert">
       {{ error }}
-      <button class="alert__action" type="button" @click="submit()">重试</button>
+      <button class="alert__action" type="button" @click="retry">重试</button>
     </p>
 
     <!-- 单曲 -->
@@ -213,11 +225,11 @@ function searchBy(name: string) {
         @play="playTrack"
       />
       <EmptyState
-        v-if="!loading && submitted && !error && songTracks.length === 0"
+        v-if="!loading && query && !error && songTracks.length === 0"
         compact
         icon="search"
-        :title="`没有找到「${submitted}」相关的歌曲`"
-        description="换个关键词试试，或检查本地服务是否正常运行。"
+        :title="`没有找到「${query}」相关的歌曲`"
+        description="换个关键词试试。"
       />
     </div>
 
@@ -246,7 +258,7 @@ function searchBy(name: string) {
           <span class="card__meta">{{ item.creator }} · {{ formatCount(item.playCount) }} 播放</span>
         </button>
       </div>
-      <div v-else-if="submitted && !error" class="panel">
+      <div v-else-if="query && !error" class="panel">
         <EmptyState compact icon="disc" title="没有找到相关歌单" description="换个关键词再试试。" />
       </div>
     </div>
@@ -275,7 +287,7 @@ function searchBy(name: string) {
           <span class="card__meta">{{ formatCount(item.fans) }} 粉丝 · {{ item.songCount }} 首</span>
         </button>
       </div>
-      <div v-else-if="submitted && !error" class="panel">
+      <div v-else-if="query && !error" class="panel">
         <EmptyState compact icon="user" title="没有找到相关歌手" description="换个关键词再试试。" />
       </div>
     </div>
@@ -305,66 +317,18 @@ function searchBy(name: string) {
           <span class="card__meta">{{ item.singer }} · {{ item.publishTime || '—' }}</span>
         </button>
       </div>
-      <div v-else-if="submitted && !error" class="panel">
+      <div v-else-if="query && !error" class="panel">
         <EmptyState compact icon="disc" title="没有找到相关专辑" description="换个关键词再试试。" />
-      </div>
-    </div>
-
-    <!-- 热词 -->
-    <div v-if="!submitted" class="panel hot">
-      <div class="hot__head">
-        <h3 class="section__title">热门搜索</h3>
-        <span class="section__hint">Trending</span>
-      </div>
-      <div class="chips">
-        <button
-          v-for="item in hotKeywords"
-          :key="item"
-          class="chip"
-          type="button"
-          @click="submit(item)"
-        >
-          {{ item }}
-        </button>
       </div>
     </div>
   </PageShell>
 </template>
 
 <style scoped>
-.searchbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 8px 8px 18px;
-  border-radius: var(--r-lg);
-  color: var(--text-3);
-}
-
-.searchbar input {
-  flex: 1;
-  min-width: 0;
-  height: 40px;
-  border: none;
-  outline: none;
-  background: transparent;
-  font-size: 14px;
-  color: var(--text-1);
-}
-
-.searchbar input::placeholder {
-  color: var(--text-3);
-}
-
-.searchbar__submit {
-  height: 40px;
-  flex: none;
-}
-
 .tabs {
   display: flex;
   gap: 6px;
-  margin: 22px 0 16px;
+  margin: 0 0 16px;
 }
 
 .tab {
@@ -491,46 +455,5 @@ function searchBy(name: string) {
 .card__line {
   height: 9px;
   border-radius: 999px;
-}
-
-/* ---------- 热词 ---------- */
-
-.hot {
-  margin-top: 18px;
-  padding: 8px 8px 18px;
-}
-
-.hot__head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  padding: 16px 14px 12px;
-}
-
-.chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 0 14px 8px;
-}
-
-.chip {
-  height: 30px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid var(--stroke);
-  background: rgba(255, 255, 255, 0.03);
-  font-size: 12.5px;
-  color: var(--text-2);
-  transition:
-    color var(--dur-fast) var(--ease),
-    border-color var(--dur-fast) var(--ease),
-    background-color var(--dur-fast) var(--ease);
-}
-
-.chip:hover {
-  color: var(--text-1);
-  border-color: rgba(44, 230, 230, 0.4);
-  background: var(--brand-soft);
 }
 </style>

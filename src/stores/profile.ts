@@ -29,7 +29,7 @@ export const useProfileMetaStore = defineStore('profileMeta', () => {
 
   async function load(force = false) {
     if (!force && grade.value && vip.value) return
-    // 并发调用共享同一次请求，避免签到链与页面各拉一遍
+    // 并发调用共享同一次请求，避免个人中心与其它入口各拉一遍
     if (inflight) {
       await inflight
       return

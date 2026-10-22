@@ -34,6 +34,8 @@ const bridge: KugouBridge = {
     toggleMaximize: () => invoke<boolean>('window:toggle-maximize'),
     close: () => ipcRenderer.send('window:close'),
     isMaximized: () => invoke<boolean>('window:is-maximized'),
+    setMini: (enabled: boolean) => invoke<boolean>('window:set-mini', enabled),
+    isMini: () => invoke<boolean>('window:is-mini'),
     onMaximizeChange: (cb) => subscribe<boolean>('window:maximized-changed', cb),
   },
   credential: {

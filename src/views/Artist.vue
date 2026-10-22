@@ -79,8 +79,8 @@ function openAlbum(id: string) {
   void router.push({ name: 'album', params: { id } })
 }
 
-async function playAt(index: number) {
-  await player.play(tracks.value[index], tracks.value)
+async function playAt(track: Track, queue: Track[]) {
+  await player.play(track, queue)
 }
 
 async function playAll() {
@@ -269,13 +269,6 @@ async function playAll() {
 }
 
 .stat__label {
-  font-size: 10.5px;
-  color: var(--text-3);
-}
-
-.head__gid {
-  margin-top: 12px;
-  font-family: var(--font-mono);
   font-size: 10.5px;
   color: var(--text-3);
 }

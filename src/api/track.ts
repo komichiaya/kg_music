@@ -9,7 +9,7 @@
  *
  * 这里做一次统一收敛，页面与播放器只需要面对 Track。
  */
-import type { SongQuality, Track } from '@/types/kugou'
+import type { SongQuality, Track, TrackArtist } from '@/types/kugou'
 
 type Raw = Record<string, unknown>
 
@@ -107,6 +107,80 @@ function toSeconds(value: number | null): number {
   return value > 10_000 ? Math.round(value / 1000) : Math.round(value)
 }
 
+/** 字符串数组（SingerId 这类）→ string[]，过滤空值 */
+function strList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((entry) => str(entry)).filter((entry): entry is string => Boolean(entry))
+}
+
+/**
+ * 名字串 → 单个歌手名。
+ * 分隔符覆盖搜索结果的「、」以及部分来源的「/」「&」「,」。
+ */
+function splitSingerNames(text: string): string[] {
+  return text
+    .split(/[、,，/&]/)
+    .map((name) => name.trim())
+    .filter(Boolean)
+}
+
+/** 从 [{ id, name }] 这类结构化数组取歌手；缺 id 时只给 name（该歌手不可跳转） */
+function artistsFrom(list: unknown, idKeys: string[], nameKeys: string[]): TrackArtist[] {
+  if (!Array.isArray(list)) return []
+  const out: TrackArtist[] = []
+  for (const entry of list) {
+    const item = asObject(entry)
+    if (!item) continue
+    const name = pick(...nameKeys.map((key) => item[key]))
+    if (!name) continue
+    const id = pick(...idKeys.map((key) => item[key]))
+    out.push(id ? { id, name } : { name })
+  }
+  return out
+}
+
+/**
+ * 歌手列表（多歌手时每个名字各自可跳转）。
+ *
+ * 优先用结构化数组：歌单的 `singerinfo`、榜单的 `authors`、部分源的 `Singers`。
+ * 只有「拼接串 + id 数组」时（搜索结果）按数量对齐；**对不上就整串当一个歌手**，
+ * 用兜底 id —— 让链接指错人比不能点更糟。
+ */
+function artistsOf(item: Raw, singerText: string, fallbackId: string | undefined): TrackArtist[] {
+  const candidates = [
+    artistsFrom(item.singerinfo, ['id', 'author_id', 'singerid'], ['name', 'author_name', 'authorName']),
+    artistsFrom(item.authors, ['author_id', 'id'], ['author_name', 'name']),
+    artistsFrom(item.Singers, ['id', 'author_id', 'singerid'], ['name', 'author_name']),
+  ]
+  for (const list of candidates) {
+    if (list.length > 0) return list
+  }
+
+  const names = splitSingerNames(singerText)
+  const ids = strList(item.SingerId).length > 0 ? strList(item.SingerId) : strList(item.author_id)
+  if (names.length > 0 && ids.length === names.length) {
+    return names.map((name, index) => ({ id: ids[index], name }))
+  }
+  return [{ id: fallbackId, name: singerText }]
+}
+
+/**
+ * 歌单 / 榜单的 `songname` 常带「歌手 - 歌名」前缀（如「周杰伦 - 以父之名」），
+ * 列表有了独立歌手列后显得重复。
+ *
+ * 只在前缀与歌手名**完全一致**时才裁 —— 「十年 - Live」这类本身含短横线的歌名不动；
+ * 歌手拼接符可能是「、」「/」「,」「&」，比较前统一归一化。
+ */
+function stripArtistPrefix(name: string, singer: string): string {
+  const index = name.indexOf(' - ')
+  if (index <= 0) return name
+  const head = name.slice(0, index).trim()
+  const rest = name.slice(index + 3).trim()
+  if (!rest) return name
+  const normalize = (value: string) => value.replace(/\s*[/、,，&]\s*/g, '、').trim()
+  return normalize(head) === normalize(singer) ? rest : name
+}
+
 export function normalizeTrack(raw: unknown): Track | null {
   const item = asObject(raw)
   if (!item) return null
@@ -156,9 +230,32 @@ export function normalizeTrack(raw: unknown): Track | null {
     num(item.timelength) ??
     (audioInfo ? num(audioInfo.duration_128) : null)
 
+  const singerText =
+    str(item.author_name) ??
+    joinNames(item.singerinfo) ??
+    str(item.SingerName) ??
+    joinNames(item.Singers) ??
+    joinNames(item.authors) ??
+    str(base?.author_name) ??
+    '未知歌手'
+
+  // 歌手 id 命名比专辑 id 更乱：搜索是 SingerId（数组）、榜单是 authors[].author_id、
+  // 歌单是 singerinfo[].id，这里全部兼容；取不到时详情页不显示跳转。
+  const artistId =
+    strFirst(item.author_id) ??
+    strFirst(item.AuthorId) ??
+    strFirst(item.artist_id) ??
+    strFirst(item.singer_id) ??
+    strFirst(item.singerid) ??
+    strFirst(item.SingerId) ??
+    firstField(item.singerinfo, ['id', 'author_id', 'singerid']) ??
+    firstField(item.authors, ['author_id', 'id']) ??
+    firstField(item.Singers, ['id', 'author_id', 'singerid']) ??
+    undefined
+
   return {
     hash,
-    name:
+    name: stripArtistPrefix(
       pick(
         item.songname,
         item.name,
@@ -171,14 +268,10 @@ export function normalizeTrack(raw: unknown): Track | null {
         base?.songname,
         base?.filename
       ) ?? '未知曲目',
-    singer:
-      str(item.author_name) ??
-      joinNames(item.singerinfo) ??
-      str(item.SingerName) ??
-      joinNames(item.Singers) ??
-      joinNames(item.authors) ??
-      str(base?.author_name) ??
-      '未知歌手',
+      singerText
+    ),
+    singer: singerText,
+    artists: artistsOf(item, singerText, artistId),
     album:
       str(item.album_name) ??
       (album ? str(album.name) : null) ??
@@ -194,17 +287,7 @@ export function normalizeTrack(raw: unknown): Track | null {
       undefined,
     // 歌手 id 命名比专辑 id 更乱：搜索是 SingerId（数组）、榜单是 authors[].author_id、
     // 歌单是 singerinfo[].id，这里全部兼容；取不到时详情页不显示跳转。
-    artistId:
-      strFirst(item.author_id) ??
-      strFirst(item.AuthorId) ??
-      strFirst(item.artist_id) ??
-      strFirst(item.singer_id) ??
-      strFirst(item.singerid) ??
-      strFirst(item.SingerId) ??
-      firstField(item.singerinfo, ['id', 'author_id', 'singerid']) ??
-      firstField(item.authors, ['author_id', 'id']) ??
-      firstField(item.Singers, ['id', 'author_id', 'singerid']) ??
-      undefined,
+    artistId,
     albumAudioId:
       str(item.mixsongid) ??
       str(item.album_audio_id) ??
@@ -217,6 +300,8 @@ export function normalizeTrack(raw: unknown): Track | null {
     cover: coverOf(item, albumInfo),
     hashes,
     privilege: num(item.privilege) ?? num(item.Privilege) ?? undefined,
+    // 只有歌单曲目接口带 fileid；其它来源没有，删歌前需要它
+    fileid: str(item.fileid) ?? str(item.file_id) ?? str(item.fileId) ?? undefined,
   }
 }
 

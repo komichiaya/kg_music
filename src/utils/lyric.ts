@@ -24,6 +24,16 @@ export interface LyricLine {
   text: string
   /** 逐字信息，LRC 为空数组 */
   words: LyricWord[]
+  /**
+   * 译文（KRC 的 `[language:]` 字段按行号一一对应）。
+   * 只有外文歌才有；LRC 格式没有这个字段。
+   */
+  translation?: string
+  /**
+   * 音译（日文歌的罗马音，同样是 `[language:]` 的 `type: 0` 块）。
+   * 只有部分外文歌提供；与原文逐行对齐，但**没有逐字时间**。
+   */
+  transliteration?: string
 }
 
 export interface ParsedLyric {
@@ -38,9 +48,60 @@ const TIME_TAG = /\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g
 const META_TAG = /^\[(ti|ar|al|by|offset|total|hash|sign|qq|language):(.*)\]$/i
 const KRC_LINE = /^\[(\d+),(\d+)\](.*)$/
 const KRC_WORD = /<(-?\d+),(-?\d+),-?\d+>([^<]*)/g
+/** KRC 的译文/音译字段，值是 base64 的 JSON */
+const LANGUAGE_TAG = /^\[language:([A-Za-z0-9+/=]+)\]$/i
 
 function stripBom(text: string): string {
   return text.replace(/^\uFEFF/, '')
+}
+
+/**
+ * 解析 KRC 的 `[language:...]`：base64 → JSON → 按行排列的译文。
+ *
+ * 结构是 `{ content: [{ language: 0, lyricContent: [["译"], ["文"], ...] }] }`，
+ * 每项对应 KRC 的一行（含空行，顺序严格一致），所以能按行号对齐。
+ * 部分日文歌会再给一块罗马音，这里只取第一块（中文译文）。
+ */
+interface LanguageBlocks {
+  /** 中文译文（type: 1） */
+  translations: string[]
+  /** 罗马音 / 音译（type: 0） */
+  transliterations: string[]
+}
+
+/**
+ * 解出 `[language:]` 里的译文与音译。
+ *
+ * `content` 里通常有 1–2 块，顺序**不固定**（实测 Lemon 是 [译文, 罗马音]，
+ * 打上花火是 [罗马音, 译文]），因此必须按 `type` 选，不能取第一块：
+ * - `type: 1` → 译文
+ * - `type: 0` → 音译（日文罗马音）
+ */
+function decodeLanguage(encoded: string): LanguageBlocks {
+  const empty: LanguageBlocks = { translations: [], transliterations: [] }
+  try {
+    const binary = atob(encoded)
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+    const payload = JSON.parse(new TextDecoder().decode(bytes)) as {
+      content?: Array<{ type?: number; lyricContent?: string[][] }>
+    }
+    const blocks = payload.content ?? []
+    const usable = (block?: { lyricContent?: string[][] }) => (block?.lyricContent?.length ?? 0) > 0
+
+    const translation =
+      blocks.find((item) => item.type === 1 && usable(item)) ??
+      // 兼容没有 type 字段的旧数据：把第一块当译文
+      blocks.find((item) => item.type === undefined && usable(item))
+    const transliteration = blocks.find((item) => item.type === 0 && usable(item))
+
+    const rows = (block?: { lyricContent?: string[][] }) =>
+      (block?.lyricContent ?? []).map((segments) => segments.join('').trim())
+
+    return { translations: rows(translation), transliterations: rows(transliteration) }
+  } catch {
+    // 字段损坏 / 不是预期结构时当作没有附加语言块，不影响原歌词
+    return empty
+  }
 }
 
 /** 时间标签换算：`.74` → 740ms，`.740` → 740ms，`.7` → 700ms */
@@ -113,8 +174,25 @@ export function parseLrc(text: string): ParsedLyric {
 
 export function parseKrc(text: string): ParsedLyric {
   const parsed: ParsedLyric = { format: 'krc', lines: [], title: null, artist: null, album: null }
+  const rawLines = stripBom(text).split(/\r?\n/)
 
-  for (const raw of stripBom(text).split(/\r?\n/)) {
+  // 先单独扫一遍取附加语言块：`[language:]` 一般在头部，但顺序不保证
+  let translations: string[] = []
+  let transliterations: string[] = []
+  for (const raw of rawLines) {
+    const match = LANGUAGE_TAG.exec(raw.trim())
+    if (match) {
+      const decoded = decodeLanguage(match[1])
+      translations = decoded.translations
+      transliterations = decoded.transliterations
+      break
+    }
+  }
+
+  // 译文按 KRC 原始行号对齐：空行、纯音乐行也必须占位，不能跳号
+  let rawIndex = -1
+
+  for (const raw of rawLines) {
     const line = raw.trim()
     if (!line) continue
 
@@ -123,28 +201,51 @@ export function parseKrc(text: string): ParsedLyric {
     const lineMatch = KRC_LINE.exec(line)
     if (!lineMatch) continue
 
+    rawIndex += 1
+
     const lineStart = Number(lineMatch[1])
     const lineDuration = Number(lineMatch[2])
     const body = lineMatch[3]
 
     const words: LyricWord[] = []
     KRC_WORD.lastIndex = 0
+    /**
+     * 游标 = 上一个字结束的绝对时间。
+     *
+     * KRC 存在一个常见编码瑕疵：行尾字（偶尔也包括行首字）的偏移与时长都是 0，
+     * 例如 `<0,0,0>可`、`<0,0,0>山`。若直接按「行开始 + 偏移」计算，
+     * 这些字会被判定为「从行首就已唱完」，导致最后一个字一开始就整字高亮。
+     * 这里用 max(行开始 + 偏移, 游标) 兜底：偏移缺失时顺延到上一个字之后。
+     */
+    let cursor = lineStart
     let wordMatch: RegExpExecArray | null
     while ((wordMatch = KRC_WORD.exec(body)) !== null) {
       const wordText = wordMatch[3]
       if (!wordText) continue
-      words.push({
-        start: lineStart + Math.max(0, Number(wordMatch[1])),
-        duration: Math.max(0, Number(wordMatch[2])),
-        text: wordText,
-      })
+      const offset = Math.max(0, Number(wordMatch[1]))
+      const duration = Math.max(0, Number(wordMatch[2]))
+      const start = Math.max(lineStart + offset, cursor)
+      words.push({ start, duration, text: wordText })
+      cursor = start + duration
     }
 
     const plain = body.replace(KRC_WORD, '').trim()
     const text = words.length > 0 ? words.map((word) => word.text).join('').trim() : plain
     if (!text) continue
 
-    parsed.lines.push({ start: lineStart, duration: lineDuration, text, words })
+    const translation = translations[rawIndex]
+    const transliteration = transliterations[rawIndex]
+    parsed.lines.push({
+      start: lineStart,
+      duration: lineDuration,
+      text,
+      words,
+      // 与原文相同（中文歌 / 本身即罗马音）就不重复展示
+      ...(translation && translation !== text ? { translation } : {}),
+      ...(transliteration && transliteration !== text && transliteration !== translation
+        ? { transliteration }
+        : {}),
+    })
   }
 
   parsed.lines.sort((a, b) => a.start - b.start)

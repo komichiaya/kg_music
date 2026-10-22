@@ -41,6 +41,8 @@ function toPlaylist(item: Raw, currentUserId: string | null): PlaylistSummary {
     creator: str(item.list_create_username) ?? '—',
     intro: str(item.intro) ?? '',
     mine: Boolean(currentUserId && creatorId === currentUserId),
+    // 版本号用于 /playlist/update，部分返回放在列表级（见 fetchUserPlaylists 的兜底）
+    totalVer: str(item.total_ver) ?? undefined,
   }
 }
 
@@ -102,7 +104,7 @@ export async function fetchPlaylistTracks(
 
 /** 我的歌单列表 */
 export async function fetchUserPlaylists(userid: string): Promise<PlaylistSummary[]> {
-  const body = await apiPost<KugouBody<{ info?: Raw[] }>>(
+  const body = await apiPost<KugouBody<{ info?: Raw[]; total_ver?: unknown }>>(
     '/user/playlist',
     { timestamp: Date.now() },
     { params: { pagesize: 50 }, timeout: 15_000 }
@@ -116,7 +118,13 @@ export async function fetchUserPlaylists(userid: string): Promise<PlaylistSummar
   }
 
   const list = Array.isArray(body.data?.info) ? body.data.info : []
-  return list.map((item) => toPlaylist(item, userid)).filter((item) => item.id)
+  // 版本号有的版本挂在列表级，条目里没有时用它兜底，否则 /playlist/update 会版本冲突
+  const listVer = str(body.data?.total_ver)
+
+  return list
+    .map((item) => toPlaylist(item, userid))
+    .filter((item) => item.id)
+    .map((item) => (item.totalVer || !listVer ? item : { ...item, totalVer: listVer }))
 }
 
 /* ============================================================
@@ -162,6 +170,120 @@ export async function addTrackToPlaylist(listid: string, track: Track): Promise<
         ? '该歌单是收藏来的，不能添加歌曲'
         : body?.error_msg || body?.error || '添加到歌单失败'
     throw new ApiError(message, { code: code ?? 'PLAYLIST_ADD_FAILED', payload: body })
+  }
+}
+
+/* ============================================================
+ * 修改歌单信息 / 从歌单删除曲目
+ *
+ * 参数语义来自上游模块（module/playlist_update.js、module/playlist_tracks_del.js）：
+ * - `/playlist/update` 只认 listid（不是 gid），且 total_ver 必传；
+ *   模块里 intro / sort / tags 是「不传即写默认值」的写法（`params.intro || ''`、sort 默认 0），
+ *   所以只改名字也必须把简介原样带上，否则一次重命名会把简介清空。
+ * - `/playlist/tracks/del` 只认 fileid（歌单内曲目 id，不是 hash）。
+ *   重复添加同一首会改写 fileid，因此删除前必须重新读一次歌单曲目，不能用列表里的旧值。
+ * ============================================================ */
+
+/** 修改「我的歌单」名称 / 简介（传 undefined 表示不改该项） */
+export async function updatePlaylist(
+  listid: string,
+  patch: { name?: string; intro?: string; totalVer?: string }
+): Promise<void> {
+  const body = await apiGet<KugouBody<Raw>>(
+    '/playlist/update',
+    {
+      listid,
+      total_ver: patch.totalVer || 0,
+      type: 0,
+      ...(patch.name !== undefined ? { name: patch.name } : {}),
+      intro: patch.intro ?? '',
+      timestamp: Date.now(),
+    },
+    { timeout: 15_000 }
+  )
+
+  if (body?.status !== 1) {
+    throw new ApiError(body?.error_msg || body?.error || '保存歌单信息失败', {
+      code: body?.error_code ?? 'PLAYLIST_UPDATE_FAILED',
+      payload: body,
+    })
+  }
+}
+
+/** 从歌单删除一首歌（fileid 必须来自最新一次 /playlist/track/all） */
+export async function removeTrackFromPlaylist(listid: string, fileid: string): Promise<void> {
+  const body = await apiGet<KugouBody<Raw>>(
+    '/playlist/tracks/del',
+    { listid, fileids: fileid, timestamp: Date.now() },
+    { timeout: 15_000 }
+  )
+
+  if (body?.status !== 1) {
+    throw new ApiError(body?.error_msg || body?.error || '从歌单移除失败', {
+      code: body?.error_code ?? 'PLAYLIST_TRACK_DEL_FAILED',
+      payload: body,
+    })
+  }
+}
+
+/** 新建歌单返回的标识；上游字段随版本变化，这里做宽松解析 */
+export interface CreatedPlaylistRef {
+  /** 账号内 listid，写曲目时必传 */
+  listid: string | null
+  /** global_collection_id，详情页路由用 */
+  gid: string | null
+}
+
+/**
+ * 新建空白歌单。
+ *
+ * 上游 `/playlist/add`：`type=0` 为创建，`type=1` 为收藏；
+ * 新建时 `list_create_userid/list_create_listid` 固定传 0（参考官方 Lite 端报文）。
+ */
+export async function createPlaylist(
+  name: string,
+  options: { private?: boolean } = {}
+): Promise<CreatedPlaylistRef> {
+  const trimmed = name.trim()
+  if (!trimmed) {
+    throw new ApiError('歌单名称不能为空', { code: 'PLAYLIST_NAME_REQUIRED' })
+  }
+
+  const body = await apiPost<KugouBody<Raw>>(
+    '/playlist/add',
+    {
+      name: trimmed,
+      type: 0,
+      source: 1,
+      is_pri: options.private ? 1 : 0,
+      list_create_userid: 0,
+      list_create_listid: 0,
+      list_create_gid: '',
+    },
+    { params: { timestamp: Date.now() }, timeout: 15_000 }
+  )
+
+  if (body?.status !== 1) {
+    const message =
+      body?.error_msg ||
+      body?.msg ||
+      body?.message ||
+      `创建歌单失败（错误码 ${body?.error_code ?? body?.errcode ?? '未知'}）`
+    throw new ApiError(message, {
+      code: body?.error_code ?? body?.errcode ?? 'PLAYLIST_CREATE_FAILED',
+      payload: body,
+    })
+  }
+
+  const data = (body.data ?? {}) as Raw
+  const info = (data.info ?? {}) as Raw
+  return {
+    listid: str(data.listid) ?? str(info.listid) ?? null,
+    gid:
+      str(data.global_collection_id) ??
+      str(data.list_create_gid) ??
+      str(info.global_collection_id) ??
+      null,
   }
 }
 

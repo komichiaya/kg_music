@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "vue-tsc --noEmit",
-    "build": "vue-tsc && vite build && electron-builder",
+    "build:upstream": "node scripts/prepare-upstream.mjs",
+    "build": "vue-tsc && vite build && node scripts/prepare-upstream.mjs && electron-builder",
     "preview": "vite preview"
   },
   "dependencies": {

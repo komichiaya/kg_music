@@ -8,14 +8,32 @@
 import { ref } from 'vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
+import { useContextMenuStore, type ContextMenuItem } from '@/stores/contextMenu'
 import { usePlayerStore } from '@/stores/player'
 import { formatTime } from '@/utils/format'
+import { useTrackActions } from '@/composables/useTrackActions'
+import type { Track } from '@/types/kugou'
 
 defineProps<{ open: boolean }>()
 const emit = defineEmits<{ close: [] }>()
 
 const player = usePlayerStore()
+const menu = useContextMenuStore()
+const { navItems } = useTrackActions()
 const dragging = ref<number | null>(null)
+
+/** 队列行右键：跳转歌手 / 专辑，外加从队列移除 */
+function openMenu(event: MouseEvent, track: Track, index: number) {
+  const items: ContextMenuItem[] = [...navItems(track)]
+  items.push({
+    key: 'remove',
+    label: '从队列移除',
+    icon: 'minimize',
+    danger: true,
+    action: () => void player.removeAt(index),
+  })
+  menu.open(event, items)
+}
 
 function onDragStart(index: number, event: DragEvent) {
   dragging.value = index
@@ -72,6 +90,7 @@ async function clearAll() {
           @drop.prevent="onDrop(index)"
           @dragend="dragging = null"
           @click="player.playAt(index)"
+          @contextmenu.prevent="openMenu($event, track, index)"
         >
           <span class="item__index tabular">
             <AppIcon

@@ -24,6 +24,9 @@ const ICONS: Record<string, string> = {
   user: '<circle cx="12" cy="8.5" r="3.8"/><path d="M4.5 20a7.5 7.5 0 0 1 15 0"/>',
   sliders:
     '<path d="M4 7.5h9M17 7.5h3M4 16.5h3M11 16.5h9"/><circle cx="15" cy="7.5" r="2"/><circle cx="9" cy="16.5" r="2"/>',
+  latin: '<path d="M6.5 18.5 12 5.5l5.5 13"/><path d="M9 13.5h6"/>',
+  translate:
+    '<path d="M3.5 6.2h8M7.5 3.8v2.4M10.2 6.2c0 4.1-2.9 7.4-6.7 8.8"/><path d="M5.4 9.9c1 2.1 2.9 3.8 5 4.8"/><path d="m12.6 20.4 3.5-8.9 3.5 8.9"/><path d="M13.8 17.4h4.6"/>',
   'chevron-left': '<path d="m14.5 6-5.5 6 5.5 6"/>',
   'chevron-right': '<path d="m9.5 6 5.5 6-5.5 6"/>',
   play: '<path d="M8.5 5.6a1 1 0 0 1 1.5-.87l8 6.4a1 1 0 0 1 0 1.74l-8 6.4a1 1 0 0 1-1.5-.87z" fill="currentColor" stroke="none"/>',
@@ -65,6 +68,8 @@ const ICONS: Record<string, string> = {
   'heart-fill':
     '<path d="M12 20s-7.3-4.5-7.3-9.4A4.3 4.3 0 0 1 12 7.6a4.3 4.3 0 0 1 7.3 3c0 4.9-7.3 9.4-7.3 9.4z" fill="currentColor" stroke="none"/>',
   more: '<circle cx="6" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.3" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.3" fill="currentColor" stroke="none"/>',
+  mini: '<rect x="3.5" y="8.5" width="17" height="7.5" rx="2"/><path d="M7 12h6"/>',
+  expand: '<path d="M9 4.5H4.5V9"/><path d="M15 4.5h4.5V9"/><path d="M9 19.5H4.5V15"/><path d="M15 19.5h4.5V15"/>',
 }
 
 const markup = computed(() => ICONS[props.name] ?? '')

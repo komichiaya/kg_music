@@ -66,8 +66,8 @@ function goArtist() {
   if (id) void router.push({ name: 'artist', params: { id } })
 }
 
-async function playAt(index: number) {
-  await player.play(tracks.value[index], tracks.value)
+async function playAt(track: Track, queue: Track[]) {
+  await player.play(track, queue)
 }
 
 async function playAll() {
@@ -112,10 +112,9 @@ async function playAll() {
             <span v-if="tracks.length"> · {{ tracks.length }} 首</span>
             <span v-if="detail.type" class="head__badge">{{ detail.type }}</span>
           </template>
-          <template v-else-if="!loading">该 album_id 可能已失效。</template>
+          <template v-else-if="!loading">这张专辑可能已下架，或暂不可见。</template>
         </p>
         <p v-if="detail?.language" class="head__lang">{{ detail.language }}</p>
-        <p class="head__gid tabular">album_id {{ albumId }}</p>
       </div>
     </section>
 
@@ -220,13 +219,6 @@ async function playAll() {
 .head__lang {
   margin-top: 6px;
   font-size: 11.5px;
-  color: var(--text-3);
-}
-
-.head__gid {
-  margin-top: 8px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
   color: var(--text-3);
 }
 

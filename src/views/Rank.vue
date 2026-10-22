@@ -92,8 +92,8 @@ function select(rank: RankSummary) {
   void loadTracks(rank.rankid)
 }
 
-async function playAt(index: number) {
-  await player.play(tracks.value[index], tracks.value)
+async function playAt(track: Track, queue: Track[]) {
+  await player.play(track, queue)
 }
 
 async function playAll() {
@@ -103,7 +103,11 @@ async function playAll() {
 </script>
 
 <template>
-  <PageShell eyebrow="Charts" title="排行榜" >
+  <!-- class 透传到 PageShell 的根元素 .page：scoped 下写 .rank-page 会编译成
+       .rank-page[data-v-xxx]，正好命中「自身带 scope id」的根元素。
+       不能写 :deep(.page) —— 它编译成 [data-v-xxx] .page，要求祖先带 scope id，
+       而 .page 本身就是根元素、没有这样的祖先，选择器永远落空。 -->
+  <PageShell class="rank-page" eyebrow="Charts" title="排行榜" >
     <template #actions>
       <button v-if="tracks.length > 0" class="brand-button" type="button" @click="playAll">
         <AppIcon name="play" :size="14" />
@@ -154,43 +158,59 @@ async function playAll() {
           </span>
         </header>
 
-        <p v-if="error" class="detail__error">{{ error }}</p>
+        <!-- 表头固定，只有曲目区滚动 -->
+        <div class="detail__scroll">
+          <p v-if="error" class="detail__error">{{ error }}</p>
 
-        <TrackTable
-          :tracks="tracks"
-          :loading="loadingTracks"
-          :skeleton-rows="8"
-          :active-hash="player.current?.hash"
-          :playing="player.playing"
-          @play="playAt"
-        />
+          <TrackTable
+            :tracks="tracks"
+            :loading="loadingTracks"
+            :skeleton-rows="8"
+            :active-hash="player.current?.hash"
+            :playing="player.playing"
+            @play="playAt"
+          />
 
-        <EmptyState
-          v-if="!loadingTracks && tracks.length === 0 && !error"
-          compact
-          icon="activity"
-          title="该榜单暂无曲目"
-          description="换一个榜单试试。"
-        />
+          <EmptyState
+            v-if="!loadingTracks && tracks.length === 0 && !error"
+            compact
+            icon="activity"
+            title="该榜单暂无曲目"
+            description="换一个榜单试试。"
+          />
+        </div>
       </div>
     </div>
   </PageShell>
 </template>
 
 <style scoped>
+/* 本页接管高度：两列各自在「可用视口高度」内滚动，页面整体不滚动。
+   PageShell 默认是 min-height:100%，撑不出确定高度，必须改成 height:100%
+   才能把高度沿 .page → .page__body → .layout → 两列传下去。
+   选择器必须是 .rank-page（class 透传到 PageShell 根元素），
+   写成 :deep(.page) 会因为「要求祖先带 scope id」而永不匹配。 */
+.rank-page {
+  height: 100%;
+}
+
 .layout {
   display: grid;
   grid-template-columns: minmax(220px, 300px) minmax(0, 1fr);
+  /* minmax(0, 1fr) 是关键：允许行收缩到小于内容高度。
+     若写 1fr 或 auto，轨道最小尺寸是 auto（= 内容高），两列会把页面撑破。 */
+  grid-template-rows: minmax(0, 1fr);
   gap: 16px;
-  align-items: start;
+  height: 100%;
 }
 
+/* 左侧：高度由 grid 行（= 可用视口高度）决定，超出内部滚动 */
 .list {
   display: flex;
   flex-direction: column;
   align-items: stretch;
   gap: 8px;
-  max-height: calc(100vh - var(--playerbar-h) - var(--titlebar-h) - 140px);
+  min-height: 0;
   overflow-y: auto;
   padding-right: 2px;
 }
@@ -282,8 +302,12 @@ async function playAll() {
   border-radius: 999px;
 }
 
+/* 右侧：同样吃到可用视口高度；表头 flex:none 固定，曲目区独立滚动。
+   去掉原来的 min-height:420px —— 它会阻止面板收缩到小于 420，窗口一矮就溢出。 */
 .detail {
-  min-height: 420px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   padding-bottom: 8px;
 }
 
@@ -292,8 +316,15 @@ async function playAll() {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex: none;
   padding: 20px 22px 16px;
   border-bottom: 1px solid var(--stroke);
+}
+
+.detail__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .detail__eyebrow {
@@ -331,9 +362,11 @@ async function playAll() {
   }
 }
 
+/* 窄屏收成单列：榜单列表限高 260 后作为 auto 行，曲目区吃掉剩余高度 */
 @media (max-width: 900px) {
   .layout {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .list {

@@ -59,7 +59,7 @@ export const useAuthStore = defineStore('auth', () => {
   const hydrating = ref(false)
   /** 会话是否已完成一次服务端校验（失败或上游未就绪时为 false，可重试） */
   const sessionChecked = ref(false)
-  /** 进行中的会话补水，签到链与 App 可共享同一次请求 */
+  /** 进行中的会话补水，App 与页面可共享同一次请求 */
   let hydratePromise: Promise<void> | null = null
   /** 是否因 token 失效被登出，登录页可据此提示 */
   const sessionExpired = ref(false)

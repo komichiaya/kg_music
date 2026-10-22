@@ -16,20 +16,62 @@ import { useRouter } from 'vue-router'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { useLyricStore } from '@/stores/lyric'
 import { usePlayerStore } from '@/stores/player'
+import { useSettingsStore } from '@/stores/settings'
 import { lineFill, wordFill, type LyricLine, type LyricWord } from '@/utils/lyric'
 
 const router = useRouter()
 const player = usePlayerStore()
 const lyric = useLyricStore()
+const settings = useSettingsStore()
 
 const scrollRef = ref<HTMLElement | null>(null)
 /** 用户手动滚动后的静默期（毫秒时间戳） */
 let pauseAutoScrollUntil = 0
 
-const timeMs = computed(() => player.currentTime * 1000)
+/**
+ * 逐字扫光的时间轴。
+ *
+ * 不能用 `player.currentTime`：它只在 timeupdate 时更新（约 4Hz），
+ * 扫光会一格一格跳。这里在播放时用 rAF 直接读 audio.currentTime，
+ * 暂停时退回 store 的值（此时它已经准确）。
+ */
+const timeMs = ref(player.getPlaybackTime() * 1000)
+let rafId = 0
+
+function tick() {
+  timeMs.value = player.getPlaybackTime() * 1000
+  rafId = requestAnimationFrame(tick)
+}
+
+function stopTick() {
+  if (rafId) cancelAnimationFrame(rafId)
+  rafId = 0
+}
+
+watch(
+  () => player.playing,
+  (playing) => {
+    stopTick()
+    if (playing) rafId = requestAnimationFrame(tick)
+    else timeMs.value = player.getPlaybackTime() * 1000
+  },
+  { immediate: true }
+)
+
+// 暂停状态下的拖动 / 点歌词跳转：此时没有 rAF 循环，靠这个同步
+watch(
+  () => player.currentTime,
+  (seconds) => {
+    if (!player.playing) timeMs.value = seconds * 1000
+  }
+)
 const sourceLabel = computed(() =>
   lyric.status === 'ready' ? (lyric.source === 'krc' ? 'KRC 逐字' : 'LRC 逐行') : null
 )
+/** 只有 KRC 带译文；纯音乐 / 中文歌通常没有，此时不显示翻译按钮 */
+const hasTranslation = computed(() => lyric.lines.some((line) => Boolean(line.translation)))
+/** 只有部分日文歌带罗马音；没有时不显示罗马音按钮 */
+const hasRomaji = computed(() => lyric.lines.some((line) => Boolean(line.transliteration)))
 
 function isActive(index: number) {
   return index === lyric.activeIndex
@@ -108,6 +150,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  stopTick()
   window.removeEventListener('keydown', onKeydown)
 })
 </script>
@@ -134,6 +177,26 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="lyric-page__actions">
+        <button
+          v-if="hasTranslation"
+          class="icon-button"
+          :class="{ 'icon-button--active': settings.lyricTranslation }"
+          type="button"
+          :title="settings.lyricTranslation ? '隐藏翻译' : '显示翻译'"
+          @click="settings.lyricTranslation = !settings.lyricTranslation"
+        >
+          <AppIcon name="translate" :size="17" />
+        </button>
+        <button
+          v-if="hasRomaji"
+          class="icon-button"
+          :class="{ 'icon-button--active': settings.lyricRomaji }"
+          type="button"
+          :title="settings.lyricRomaji ? '隐藏罗马音' : '显示罗马音'"
+          @click="settings.lyricRomaji = !settings.lyricRomaji"
+        >
+          <AppIcon name="latin" :size="17" />
+        </button>
         <span v-if="sourceLabel" class="pill pill--plain">{{ sourceLabel }}</span>
         <button class="icon-button" type="button" title="返回（Esc）" @click="close">
           <AppIcon name="chevron-right" :size="17" />
@@ -196,6 +259,14 @@ onBeforeUnmount(() => {
           <span v-else class="lyric-line__text" :style="isActive(index) ? lineStyle(line) : undefined">
             {{ line.text }}
           </span>
+          <span
+            v-if="settings.lyricRomaji && line.transliteration"
+            class="lyric-line__roma"
+          >{{ line.transliteration }}</span>
+          <span
+            v-if="settings.lyricTranslation && line.translation"
+            class="lyric-line__trans"
+          >{{ line.translation }}</span>
         </p>
         <div class="lyric-page__pad" />
       </div>
@@ -375,23 +446,57 @@ onBeforeUnmount(() => {
   font-size: 30px;
   font-weight: 600;
   letter-spacing: 0.01em;
-  background: var(--brand-grad);
+  background: var(--lyric-grad);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
   text-shadow: none;
 }
 
-/* 逐字扫光：未唱到的字保留弱色，已唱到的字被渐变填充 */
+/* 逐字扫光：未唱到的字保留弱色，已唱到的字被亮白→品牌色渐变填充 */
 .lyric-line__word {
   font-size: 30px;
   font-weight: 600;
-  background-image: linear-gradient(90deg, var(--brand-1), var(--brand-2));
+  background-image: var(--lyric-grad);
   background-repeat: no-repeat;
   background-size: var(--fill, 0%) 100%;
   -webkit-background-clip: text;
   background-clip: text;
   color: var(--text-3);
+}
+
+
+/* 罗马音：紧贴原文下方，比译文更弱；同样不做渐变裁切 */
+.lyric-line__roma {
+  display: block;
+  margin-top: 3px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  color: var(--text-3);
+  -webkit-text-fill-color: currentColor;
+}
+
+.lyric-line--active .lyric-line__roma {
+  font-size: 15px;
+  color: var(--text-2);
+}
+
+/* 译文：跟在原文下方，弱一档；当前行也放大一点，但不用渐变裁切 */
+.lyric-line__trans {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.55;
+  letter-spacing: 0;
+  color: var(--text-3);
+  -webkit-text-fill-color: currentColor;
+}
+
+.lyric-line--active .lyric-line__trans {
+  font-size: 17px;
+  color: var(--text-2);
 }
 
 /* ---------- 空态 / 占位 ---------- */

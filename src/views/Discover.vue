@@ -23,6 +23,7 @@ import { useAuthStore } from '@/stores/auth'
 import { useDiscoverStore } from '@/stores/discover'
 import { useLibraryStore } from '@/stores/library'
 import { usePlayerStore } from '@/stores/player'
+import type { Track } from '@/types/kugou'
 import { usePlaylistPickerStore } from '@/stores/playlistPicker'
 import { useUpstream } from '@/composables/useUpstream'
 import { formatCount } from '@/utils/format'
@@ -133,8 +134,13 @@ function openRank(rankid: string) {
   void router.push({ name: 'rank', query: { rankid } })
 }
 
-async function playEveryday(index: number) {
-  await player.play(everyday.value[index], everyday.value)
+async function playEveryday(track: Track, queue: Track[]) {
+  await player.play(track, queue)
+}
+
+function playAllEveryday() {
+  const list = everyday.value
+  if (list.length > 0) void player.play(list[0], list)
 }
 </script>
 
@@ -142,7 +148,7 @@ async function playEveryday(index: number) {
   <PageShell
     eyebrow="Discover"
     title="发现"
-    subtitle="私人 FM、每日推荐、排行榜与热门搜索均已接入真实接口，点击即可起播。"
+    subtitle="按你的口味每日更新，点开即播。"
   >
     <template #actions>
       <span class="pill" :class="`pill--${upstreamTone}`">{{ upstreamLabel }}</span>
@@ -193,7 +199,7 @@ async function playEveryday(index: number) {
 
         <template v-else>
           <h2 class="fm__title fm__title--ghost">私人 FM 暂时没有取到歌</h2>
-          <p class="fm__desc">{{ fmError || '请确认本地服务已启动后重试。' }}</p>
+          <p class="fm__desc">{{ fmError || '暂时没取到推荐，稍后重试。' }}</p>
           <div class="fm__actions">
             <button class="ghost-button" type="button" @click="refreshFm">
               <AppIcon name="refresh" :size="14" />
@@ -241,7 +247,7 @@ async function playEveryday(index: number) {
       <div v-else class="panel daily">
         <div v-if="everyday.length > 0" class="daily__head">
           <span class="daily__hint">共 {{ everyday.length }} 首 · 点击任意行起播</span>
-          <button class="ghost-link" type="button" @click="playEveryday(0)">
+          <button class="ghost-link" type="button" @click="playAllEveryday">
             <AppIcon name="play" :size="13" />
             播放全部
           </button>

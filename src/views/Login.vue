@@ -187,7 +187,7 @@ async function submitPassword() {
         <h1 class="intro__title">把歌单、歌词<br />与每日签到<br /><span>收进一个窗口</span></h1>
         <p class="intro__desc">
           酷狗音乐概念版桌面播放器。重新设计的暗色界面、逐行与逐字歌词、
-          启动即完成的签到链路，都为你安静地运行。
+          启动即完成的每日签到，都在一个窗口里安静运行。
         </p>
 
         <ul class="intro__features">
@@ -282,7 +282,7 @@ async function submitPassword() {
               />
             </label>
             <p class="pane__hint pane__hint--left">
-              为避免触发风控，播放器不代发短信：请先在酷狗官方端登录并获取验证码后填入。
+              验证码请先在酷狗官方客户端登录后获取，再填入这里。
             </p>
           </template>
 
@@ -309,7 +309,7 @@ async function submitPassword() {
               />
             </label>
             <p class="pane__hint pane__hint--left">
-              密码仅用于向本地服务换取 token，不会以明文形式落盘。
+              密码仅用于登录验证，不会以明文保存。
             </p>
           </template>
         </div>

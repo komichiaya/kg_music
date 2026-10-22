@@ -12,6 +12,10 @@ dist
 dist-ssr
 *.local
 
+# 打包时由 scripts/prepare-upstream.mjs 生成的上游副本
+build/upstream
+release
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

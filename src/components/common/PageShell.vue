@@ -20,7 +20,7 @@ withDefaults(
       <div class="page__heading">
         <p v-if="eyebrow" class="page__eyebrow">{{ eyebrow }}</p>
         <h1 class="page__title">{{ title }}</h1>
-        <p v-if="subtitle" class="page__subtitle">{{ subtitle }}</p>
+        <p v-if="subtitle" class="page__subtitle" :title="subtitle">{{ subtitle }}</p>
       </div>
       <div v-if="$slots.actions" class="page__actions">
         <slot name="actions" />
@@ -72,6 +72,12 @@ withDefaults(
   font-size: 13px;
   line-height: 1.7;
   color: var(--text-2);
+  /* 专辑 / 歌单的简介可能是上千字的宣发文案，最多两行，完整内容走 title 悬停，
+     否则页面标题区会把正文挤出首屏 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .page__actions {

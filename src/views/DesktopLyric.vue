@@ -188,7 +188,7 @@ function wordStyle(fill: number) {
 }
 
 .dl__word {
-  background-image: linear-gradient(90deg, var(--brand-1), var(--brand-2));
+  background-image: var(--lyric-grad);
   background-repeat: no-repeat;
   background-size: var(--fill, 0%) 100%;
   -webkit-background-clip: text;

@@ -13,6 +13,7 @@ import TrackTable from '@/components/common/TrackTable.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useLibraryStore } from '@/stores/library'
 import { usePlayerStore } from '@/stores/player'
+import type { Track } from '@/types/kugou'
 
 type TabKey = 'created' | 'favorite' | 'recent'
 
@@ -45,8 +46,8 @@ function openPlaylist(id: string) {
   void router.push({ name: 'playlist', params: { id } })
 }
 
-async function playAt(index: number) {
-  await player.play(library.history[index], library.history)
+async function playAt(track: Track, queue: Track[]) {
+  await player.play(track, queue)
 }
 
 async function reload() {
@@ -58,7 +59,6 @@ async function reload() {
 <template>
   <PageShell eyebrow="Library" title="我的音乐" subtitle="账号下的自建歌单与听歌历史。">
     <template #actions>
-      <span class="pill pill--plain">ID {{ auth.userId }}</span>
       <button class="ghost-button" type="button" @click="reload">
         <AppIcon name="refresh" :size="14" />
         刷新

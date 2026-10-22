@@ -18,6 +18,8 @@ const bridge = {
     toggleMaximize: () => invoke("window:toggle-maximize"),
     close: () => electron.ipcRenderer.send("window:close"),
     isMaximized: () => invoke("window:is-maximized"),
+    setMini: (enabled) => invoke("window:set-mini", enabled),
+    isMini: () => invoke("window:is-mini"),
     onMaximizeChange: (cb) => subscribe("window:maximized-changed", cb)
   },
   credential: {

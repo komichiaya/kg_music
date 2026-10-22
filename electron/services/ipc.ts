@@ -11,6 +11,7 @@ import type { AppInfo, KugouCredential, UpstreamStatus } from '../../src/types/k
 import { clearCredential, readCredential, writeCredential } from './store'
 import { upstream } from './upstream'
 import { closeLyricWindow, openLyricWindow, pushLyricData, toggleLyricWindow } from './lyricWindow'
+import { isMiniWindow, setMiniWindow } from './windowMode'
 
 /** 统一从事件来源反查窗口；来源不可信时返回 null，由调用方短路 */
 function windowOf(source: { sender: WebContents }): BrowserWindow | null {
@@ -66,6 +67,18 @@ export function registerIpcHandlers() {
   })
 
   ipcMain.handle('window:is-maximized', (event) => windowOf(event)?.isMaximized() ?? false)
+
+  // 迷你播放器：Renderer 主动切换，Main 负责保存/恢复普通窗口的几何与能力
+  ipcMain.handle('window:set-mini', (event, enabled: unknown) => {
+    const win = windowOf(event)
+    if (!win) return false
+    return setMiniWindow(win, enabled === true)
+  })
+
+  ipcMain.handle('window:is-mini', (event) => {
+    const win = windowOf(event)
+    return win ? isMiniWindow(win) : false
+  })
 
   ipcMain.handle('credential:get', () => readCredential())
 

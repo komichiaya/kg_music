@@ -24,10 +24,26 @@
   --brand-soft: rgba(44, 230, 230, 0.12);
   --brand-grad: linear-gradient(135deg, #2ce6e6, #2d7ff9);
 
+  /* 歌词高亮：亮白起笔 + 品牌色收尾，暗色下扫光更醒目 */
+  --lyric-grad: linear-gradient(90deg, #ffffff 0%, #ffffff 40%, #eafffe 60%, var(--brand-1) 84%, var(--brand-2) 100%);
+
+  /* 封面主色：由 palette 工具随当前曲目写入，缺省回退品牌色 */
+  --cover-1: #2d7ff9;
+  --cover-2: #2ce6e6;
+  --cover-3: #7c5cff;
+
+  /* 半透明填充：亮/暗主题下含义一致，避免各组件各写一套 rgba */
+  --fill-1: rgba(255, 255, 255, 0.04);
+  --fill-2: rgba(255, 255, 255, 0.07);
+  --fill-3: rgba(255, 255, 255, 0.1);
+  --fill-4: rgba(255, 255, 255, 0.16);
+  --scrim: rgba(6, 8, 13, 0.72);
+
   /* 文本 */
   --text-1: #f2f5fa;
   --text-2: #a6aec0;
-  --text-3: #6b7280;
+  /* 弱化文本需满足 AA：在 --bg-1 上 4.9:1（原 #6b7280 仅 3.8:1） */
+  --text-3: #7b8598;
 
   /* 功能色 */
   --ok: #34d399;
@@ -40,6 +56,10 @@
   --r-md: 14px;
   --r-lg: 20px;
   --r-xl: 28px;
+
+  /* 应用外壳（标题栏）背景：极光风格是半透明渐变 + 模糊，极简风格换成纯色 */
+  --chrome-bg: linear-gradient(180deg, rgba(11, 14, 20, 0.72), rgba(11, 14, 20, 0.36));
+  --chrome-blur: blur(18px);
 
   /* 阴影 */
   --shadow-1: 0 8px 32px rgba(0, 0, 0, 0.35);
@@ -81,13 +101,24 @@
   --brand-1: #0fb4c4;
   --brand-2: #2d7ff9;
   --brand-soft: rgba(15, 180, 196, 0.12);
+  /* 亮色下白字不可见，改用品牌色到深蓝的实色渐变 */
+  --lyric-grad: linear-gradient(90deg, var(--brand-1) 0%, var(--brand-2) 100%);
 
   --text-1: #0f172a;
   --text-2: #4a5568;
-  --text-3: #8a94a6;
+  /* 亮色弱文本：在 #f4f6fb 上 5.0:1 */
+  --text-3: #5f6b7e;
+
+  --fill-1: rgba(15, 23, 42, 0.04);
+  --fill-2: rgba(15, 23, 42, 0.06);
+  --fill-3: rgba(15, 23, 42, 0.1);
+  --fill-4: rgba(15, 23, 42, 0.16);
+  --scrim: rgba(248, 250, 253, 0.78);
 
   --shadow-1: 0 8px 32px rgba(15, 23, 42, 0.08);
   --shadow-2: 0 24px 64px rgba(15, 23, 42, 0.12);
+
+  --chrome-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(255, 255, 255, 0.45));
 }
 
 /* Element Plus 变量桥接：让 UI 库与自绘组件共用同一套色板 */
@@ -107,4 +138,55 @@ html.dark {
   --el-border-color-light: var(--stroke);
   --el-border-radius-base: var(--r-sm);
   --el-font-family: var(--font-sans);
+}
+
+/* ============================================================
+ * 主题风格：极简（data-style="minimal"）
+ *
+ * 与明暗主题正交：亮色纯白、暗色纯黑，去掉光晕 / 玻璃 / 渐变，
+ * 层级只靠 1px 描边区分。这里只覆盖变量，组件继续引用变量即可生效。
+ * ============================================================ */
+:root[data-style='minimal'] {
+  --bg-0: #000000;
+  --bg-1: #000000;
+  --bg-2: #0b0b0b;
+  --bg-3: #141414;
+  --glass: #000000;
+  --glass-strong: #080808;
+  --stroke: rgba(255, 255, 255, 0.14);
+  --stroke-strong: rgba(255, 255, 255, 0.24);
+  --fill-1: rgba(255, 255, 255, 0.05);
+  --fill-2: rgba(255, 255, 255, 0.08);
+  --fill-3: rgba(255, 255, 255, 0.12);
+  --fill-4: rgba(255, 255, 255, 0.18);
+  --scrim: rgba(0, 0, 0, 0.82);
+  /* 极简不要投影：层级由描边表达，只给浮层留一点 */
+  --shadow-1: none;
+  --shadow-2: 0 16px 40px rgba(0, 0, 0, 0.66);
+  --glow-brand: 0 0 0 1px rgba(44, 230, 230, 0.4);
+  --brand-grad: var(--brand-1);
+  --chrome-bg: #000000;
+  --chrome-blur: none;
+}
+
+:root[data-style='minimal'][data-theme='light'] {
+  color-scheme: light;
+
+  --bg-0: #ffffff;
+  --bg-1: #ffffff;
+  --bg-2: #f7f7f7;
+  --bg-3: #efefef;
+  --glass: #ffffff;
+  --glass-strong: #ffffff;
+  --stroke: rgba(15, 23, 42, 0.12);
+  --stroke-strong: rgba(15, 23, 42, 0.22);
+  --fill-1: rgba(15, 23, 42, 0.035);
+  --fill-2: rgba(15, 23, 42, 0.06);
+  --fill-3: rgba(15, 23, 42, 0.09);
+  --fill-4: rgba(15, 23, 42, 0.14);
+  --scrim: rgba(255, 255, 255, 0.9);
+  --shadow-1: none;
+  --shadow-2: 0 16px 40px rgba(15, 23, 42, 0.12);
+  --chrome-bg: #ffffff;
+  --chrome-blur: none;
 }

@@ -15,6 +15,7 @@ import { bindUpstreamBroadcast, registerIpcHandlers } from './services/ipc'
 import { readWindowState, writeWindowState, type WindowState } from './services/store'
 import { upstream } from './services/upstream'
 import { closeLyricWindow } from './services/lyricWindow'
+import { isMiniWindow } from './services/windowMode'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -39,6 +40,17 @@ const DEFAULT_BOUNDS = { width: 1280, height: 800 }
 let win: BrowserWindow | null = null
 let quitReady = false
 let saveTimer: NodeJS.Timeout | null = null
+/**
+ * 最近一次「非最大化、非迷你」的窗口 bounds。
+ * 不能依赖 getNormalBounds()：程序化 maximize 之后（尤其跨屏且带 DPI 缩放）
+ * 它可能返回最大化后的工作区尺寸，导致下一次启动窗口超出屏幕。
+ */
+let lastNormalBounds: Electron.Rectangle | null = null
+/**
+ * 最大化/还原是异步的，过渡期间 getBounds() 会短暂返回接近工作区的尺寸。
+ * 这段窗口期内一律不更新 lastNormalBounds，否则会把「最大化后的尺寸」当成用户窗口大小。
+ */
+let boundsSuppressUntil = 0
 
 /**
  * 校验历史窗口位置是否仍落在某块屏幕上。
@@ -47,49 +59,78 @@ let saveTimer: NodeJS.Timeout | null = null
 function sanitizeBounds(state: WindowState | null) {
   if (!state) return { ...DEFAULT_BOUNDS }
 
-  const width = Math.max(960, Math.round(state.width))
-  const height = Math.max(640, Math.round(state.height))
+  // 先按目标显示器的工作区夹住尺寸，避免历史脏数据（如最大化后的物理像素）撑爆窗口
+  const anchor = {
+    x: typeof state.x === 'number' ? state.x : 0,
+    y: typeof state.y === 'number' ? state.y : 0,
+  }
+  const area = screen.getDisplayNearestPoint(anchor).workArea
+  const width = Math.max(960, Math.min(Math.round(state.width), area.width))
+  const height = Math.max(640, Math.min(Math.round(state.height), area.height))
 
   if (typeof state.x !== 'number' || typeof state.y !== 'number') return { width, height }
 
   const visible = screen.getAllDisplays().some((display) => {
-    const area = display.workArea
+    const workArea = display.workArea
     return (
-      state.x! < area.x + area.width &&
-      state.x! + width > area.x &&
-      state.y! < area.y + area.height &&
-      state.y! + height > area.y
+      state.x! < workArea.x + workArea.width &&
+      state.x! + width > workArea.x &&
+      state.y! < workArea.y + workArea.height &&
+      state.y! + height > workArea.y
     )
   })
 
   return visible ? { width, height, x: Math.round(state.x), y: Math.round(state.y) } : { width, height }
 }
 
+/** 只在窗口处于普通形态时记录 bounds；最大化/全屏/迷你一律跳过 */
+function rememberNormalBounds(target: BrowserWindow) {
+  if (target.isDestroyed()) return
+  if (Date.now() < boundsSuppressUntil) return
+  if (isMiniWindow(target) || target.isMaximized() || target.isMinimized() || target.isFullScreen()) {
+    return
+  }
+  const bounds = target.getBounds()
+  // 启动/恢复时的 maximize 是异步的：过渡阶段会短暂报告「接近工作区」的尺寸，
+  // 把它当成普通 bounds 会让下次启动丢失用户窗口大小，这里直接判为不可信。
+  const area = screen.getDisplayMatching(bounds).workArea
+  if (bounds.width >= area.width - 8 && bounds.height >= area.height - 8) return
+  lastNormalBounds = bounds
+}
+
 function collectWindowState(target: BrowserWindow): WindowState {
-  const bounds = target.isMaximized() ? target.getNormalBounds() : target.getBounds()
+  const current = target.getBounds()
+  const maximized = target.isMaximized()
+  const bounds = maximized ? lastNormalBounds ?? target.getNormalBounds() : current
   return {
     width: bounds.width,
     height: bounds.height,
     x: bounds.x,
     y: bounds.y,
-    maximized: target.isMaximized(),
+    maximized,
   }
 }
 
 function scheduleSaveWindowState(target: BrowserWindow) {
   if (target.isDestroyed()) return
+  // 迷你模式只改窗口几何，不能污染普通模式的持久化状态
+  if (isMiniWindow(target)) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     saveTimer = null
-    if (!target.isDestroyed()) void writeWindowState(collectWindowState(target))
+    // 进入/退出迷你的瞬间也可能触发 resize，回调执行时必须再确认一次
+    if (target.isDestroyed() || isMiniWindow(target)) return
+    rememberNormalBounds(target)
+    void writeWindowState(collectWindowState(target))
   }, 400)
 }
 
 async function createWindow() {
   const state = await readWindowState()
+  const initial = sanitizeBounds(state)
 
   win = new BrowserWindow({
-    ...sanitizeBounds(state),
+    ...initial,
     minWidth: 960,
     minHeight: 640,
     show: false,
@@ -107,12 +148,29 @@ async function createWindow() {
       sandbox: false,
       webSecurity: true,
       spellcheck: false,
+      // 迷你模式/最小化时仍需推进进度与桌面歌词，禁用后台节流
+      backgroundThrottling: false,
     },
   })
 
-  if (state?.maximized) win.maximize()
+  // 记录普通形态基准（必须在 maximize 之前取，否则会拿到最大化后的 bounds）
+  lastNormalBounds = {
+    width: initial.width,
+    height: initial.height,
+    x: initial.x ?? 0,
+    y: initial.y ?? 0,
+  }
 
-  win.once('ready-to-show', () => win?.show())
+  if (state?.maximized) {
+    boundsSuppressUntil = Date.now() + 1500
+    win.maximize()
+  }
+
+  win.once('ready-to-show', () => {
+    win?.show()
+    // show 之前的 getBounds 不可信（会返回接近工作区的占位尺寸），首帧后再校正一次
+    if (win && !win.isMaximized()) rememberNormalBounds(win)
+  })
 
   win.webContents.on('did-finish-load', () => {
     console.log('[main] 渲染层加载完成')
@@ -127,18 +185,28 @@ async function createWindow() {
     if (!win || win.isDestroyed()) return
     win.webContents.send('window:maximized-changed', win.isMaximized())
   }
-  win.on('maximize', notifyMaximize)
-  win.on('unmaximize', notifyMaximize)
+  win.on('maximize', () => {
+    boundsSuppressUntil = Date.now() + 1200
+    notifyMaximize()
+  })
+  win.on('unmaximize', () => {
+    boundsSuppressUntil = Date.now() + 1200
+    notifyMaximize()
+  })
 
   win.on('resize', () => win && scheduleSaveWindowState(win))
   win.on('move', () => win && scheduleSaveWindowState(win))
 
   win.on('close', () => {
-    if (win && !win.isDestroyed()) void writeWindowState(collectWindowState(win))
+    if (win && !win.isDestroyed() && !isMiniWindow(win)) {
+      rememberNormalBounds(win)
+      void writeWindowState(collectWindowState(win))
+    }
   })
 
   win.on('closed', () => {
     win = null
+    lastNormalBounds = null
     // 主窗口关闭时一并回收桌面歌词窗口，否则 window-all-closed 不会触发
     closeLyricWindow()
   })
@@ -165,6 +233,7 @@ async function createWindow() {
   } else {
     await win.loadFile(path.join(RENDERER_DIST, 'index.html'))
   }
+
 }
 
 // 单实例：重复启动时聚焦已有窗口，避免多个实例争抢上游端口

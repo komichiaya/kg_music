@@ -5,20 +5,22 @@
  * 路由参数即 gid（global_collection_id）。上游 `/playlist/track/all` 传 specialid 会 20010，
  * 所以这里只接受 gid，缺失时直接提示而不是猜一个 id。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import PageShell from '@/components/common/PageShell.vue'
 import EmptyState from '@/components/common/EmptyState.vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import TrackTable from '@/components/common/TrackTable.vue'
-import { fetchPlaylistDetail, fetchPlaylistTracks } from '@/api/playlist'
+import { fetchPlaylistDetail, fetchPlaylistTracks, removeTrackFromPlaylist } from '@/api/playlist'
 import { ApiError } from '@/api/request'
 import { useAuthStore } from '@/stores/auth'
+import { useLibraryStore } from '@/stores/library'
 import { usePlayerStore } from '@/stores/player'
 import type { PlaylistSummary, Track } from '@/types/kugou'
 
 const route = useRoute()
 const auth = useAuthStore()
+const library = useLibraryStore()
 const player = usePlayerStore()
 
 const gid = computed(() => String(route.params.id ?? ''))
@@ -26,8 +28,23 @@ const detail = ref<PlaylistSummary | null>(null)
 const tracks = ref<Track[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
+/** 移除操作的即时反馈：成功/失败都用它，3.5s 后自动消失 */
+const notice = ref<{ tone: 'ok' | 'err'; text: string } | null>(null)
+const removing = ref(false)
 
 let requestToken = 0
+let noticeTimer: number | undefined
+
+/** 只有自己创建的歌单能改（上游对收藏来的歌单拒写），也才给右键「移出」 */
+const canRemove = computed(() => Boolean(detail.value?.mine && detail.value?.listid))
+
+function flash(tone: 'ok' | 'err', text: string) {
+  notice.value = { tone, text }
+  window.clearTimeout(noticeTimer)
+  noticeTimer = window.setTimeout(() => (notice.value = null), 3500)
+}
+
+onBeforeUnmount(() => window.clearTimeout(noticeTimer))
 
 function readable(err: unknown): string {
   return err instanceof ApiError ? err.message : '歌单加载失败，请稍后重试'
@@ -62,13 +79,48 @@ async function load() {
 onMounted(load)
 watch(gid, () => void load())
 
-async function playAt(index: number) {
-  await player.play(tracks.value[index], tracks.value)
+async function playAt(track: Track, queue: Track[]) {
+  await player.play(track, queue)
 }
 
 async function playAll() {
   if (tracks.value.length === 0) return
   await player.play(tracks.value[0], tracks.value)
+}
+
+/**
+ * 从本歌单移除一首歌。
+ *
+ * 删除接口只认 fileid，而重复添加同一首会改写 fileid（见 api/playlist.ts 的说明），
+ * 所以不能直接用列表里那份数据，必须先重新拉一次曲目、按 hash 找回最新的 fileid。
+ * 找不到说明这首歌已经不在歌单里（别处删过），按成功处理更符合预期。
+ */
+async function removeAt(target: Track) {
+  // 列表可能已按表头排序，不能假设屏幕顺序 == 原数组顺序，按 hash 找回下标
+  const index = tracks.value.findIndex((item) => item.hash === target.hash)
+  const track = index >= 0 ? tracks.value[index] : target
+  const info = detail.value
+  if (!track || !info?.listid || removing.value) return
+
+  removing.value = true
+  notice.value = null
+  try {
+    const fresh = await fetchPlaylistTracks(gid.value, { pageSize: 200 })
+    const target = fresh.tracks.find((item) => item.hash === track.hash && item.fileid)
+
+    if (target?.fileid) {
+      await removeTrackFromPlaylist(info.listid, target.fileid)
+    }
+
+    tracks.value = tracks.value.filter((_, i) => i !== index)
+    detail.value = { ...info, count: Math.max(0, info.count - 1) }
+    library.noteTrackRemoved(info.id)
+    flash('ok', `已从歌单移除「${track.name}」`)
+  } catch (err) {
+    flash('err', err instanceof ApiError ? err.message : '移除失败，请稍后重试')
+  } finally {
+    removing.value = false
+  }
 }
 </script>
 
@@ -76,7 +128,7 @@ async function playAll() {
   <PageShell
     eyebrow="Playlist"
     title="歌单"
-    :subtitle="detail ? detail.intro || '曲目来自 /playlist/track/all，按 gid 拉取。' : '正在加载歌单信息…'"
+    :subtitle="detail?.intro ?? ''"
   >
     <template #actions>
       <button v-if="tracks.length > 0" class="brand-button" type="button" @click="playAll">
@@ -98,13 +150,14 @@ async function playAll() {
             {{ detail.creator }} · {{ detail.count }} 首
             <span v-if="detail.mine" class="head__badge">我的歌单</span>
           </template>
-          <template v-else-if="!loading">该 gid 可能已失效，或歌单未公开。</template>
+          <template v-else-if="!loading">该歌单可能已失效，或未公开。</template>
         </p>
-        <p class="head__gid tabular">gid {{ gid }}</p>
       </div>
     </section>
 
     <p v-if="error" class="error">{{ error }}</p>
+
+    <p v-if="notice" class="notice" :class="`notice--${notice.tone}`">{{ notice.text }}</p>
 
     <section class="tracks panel">
       <TrackTable
@@ -113,7 +166,9 @@ async function playAll() {
         :skeleton-rows="8"
         :active-hash="player.current?.hash"
         :playing="player.playing"
+        :removable="canRemove"
         @play="playAt"
+        @remove="removeAt"
       />
       <EmptyState
         v-if="!loading && !error && tracks.length === 0"
@@ -194,13 +249,6 @@ async function playAll() {
   color: var(--brand-1);
 }
 
-.head__gid {
-  margin-top: 8px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--text-3);
-}
-
 .error {
   margin-top: 14px;
   padding: 10px 14px;
@@ -208,6 +256,28 @@ async function playAll() {
   border: 1px solid rgba(248, 113, 113, 0.28);
   background: rgba(248, 113, 113, 0.1);
   font-size: 12px;
+  color: var(--err);
+}
+
+/* 右键移除的即时反馈：不打断操作，所以用行内提示而不是弹框 */
+.notice {
+  margin-top: 14px;
+  padding: 9px 14px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--stroke);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.notice--ok {
+  border-color: rgba(44, 230, 230, 0.32);
+  background: var(--brand-soft);
+  color: var(--brand-1);
+}
+
+.notice--err {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(248, 113, 113, 0.1);
   color: var(--err);
 }
 

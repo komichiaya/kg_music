@@ -76,7 +76,7 @@
   height: 34vw;
   bottom: -22vw;
   left: 26vw;
-  background: radial-gradient(circle at 50% 50%, #7c5cff, transparent 70%);
+  background: radial-gradient(circle at 50% 50%, var(--cover-3, #7c5cff), transparent 70%);
   opacity: 0.22;
   animation: aurora-drift 44s var(--ease) infinite alternate-reverse;
 }
@@ -85,17 +85,11 @@
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(255, 255, 255, 0.028) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px);
+    linear-gradient(color-mix(in srgb, var(--text-1) 3%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--text-1) 3%, transparent) 1px, transparent 1px);
   background-size: 72px 72px;
   mask-image: radial-gradient(circle at 50% 0%, rgba(0, 0, 0, 0.55), transparent 72%);
   -webkit-mask-image: radial-gradient(circle at 50% 0%, rgba(0, 0, 0, 0.55), transparent 72%);
-}
-
-:root[data-theme='light'] .backdrop__grid {
-  background-image:
-    linear-gradient(rgba(15, 23, 42, 0.035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(15, 23, 42, 0.035) 1px, transparent 1px);
 }
 
 .backdrop__vignette {
@@ -106,5 +100,13 @@
 
 :root[data-theme='light'] .backdrop__vignette {
   background: radial-gradient(120% 90% at 50% 10%, transparent 40%, rgba(15, 23, 42, 0.06) 100%);
+}
+
+/* 极简风格：不画光晕 / 网格 / 暗角，只留 --bg-0 的纯色底 */
+:root[data-style='minimal'] .backdrop__base,
+:root[data-style='minimal'] .backdrop__blob,
+:root[data-style='minimal'] .backdrop__grid,
+:root[data-style='minimal'] .backdrop__vignette {
+  display: none;
 }
 </style>

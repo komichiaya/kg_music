@@ -112,12 +112,12 @@ function toApiError(error: AxiosError): ApiError {
   }
 
   if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
-    return new ApiError('请求超时，请检查本地服务是否响应缓慢', { code: error.code })
+    return new ApiError('请求超时，请稍后重试', { code: error.code })
   }
 
   // 本地服务未起来时最常见的一类：ECONNREFUSED / ERR_NETWORK
   if (error.code === 'ERR_NETWORK' || error.code === 'ECONNREFUSED') {
-    return new ApiError('无法连接本地服务，请确认 KuGouMusicApi 已启动', {
+    return new ApiError('无法连接本地服务，可在「设置」里重启服务', {
       code: error.code,
       payload: { baseURL: apiBase },
     })

@@ -15,6 +15,15 @@ import { fetchStream } from '@/api/song'
 import { ApiError } from '@/api/request'
 import { useAuthStore } from '@/stores/auth'
 import { useCheckinStore } from '@/stores/checkin'
+import {
+  clearPosition,
+  clearQueue,
+  dropLegacyResume,
+  loadPosition,
+  loadQueue,
+  savePosition,
+  saveQueue,
+} from '@/stores/playerSession'
 import type { PlayMode, SongQuality, Track } from '@/types/kugou'
 
 export const PLAY_MODE_LABEL: Record<PlayMode, string> = {
@@ -34,33 +43,14 @@ export const QUALITY_LABEL: Record<SongQuality, string> = {
 
 const VOLUME_KEY = 'kugou.concept.volume.v1'
 /**
- * 断点续播（文档 §4.4.2）。
- * 语义已收窄为「跨应用重启恢复」：同一次运行内切歌一律从头播放，
- * 只有本会话从未播放过的曲目才读取落盘位置，且读取后即消费。
+ * 会话恢复（文档 §4.4.1）。
+ * 只保存「队列 + 当前曲进度」，播放过的其他曲目不留断点；
+ * 进度 5s 节流落盘，暂停 / 拖动 / 关闭窗口时强制落盘。
  */
-const RESUME_KEY = 'kugou.concept.resume.v1'
-const RESUME_SAVE_MS = 5_000
+const POSITION_SAVE_MS = 5_000
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
-}
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key)
-    if (!raw) return fallback
-    return JSON.parse(raw) as T
-  } catch {
-    return fallback
-  }
-}
-
-function writeJson(key: string, value: unknown) {
-  try {
-    localStorage.setItem(key, JSON.stringify(value))
-  } catch {
-    // 配额受限时静默失败
-  }
 }
 
 function readableError(error: unknown): string {
@@ -106,7 +96,6 @@ export const usePlayerStore = defineStore('player', () => {
   let backupTried = false
   /** 当前音源的备用地址，主 CDN 失败时重试一次 */
   let backupUrl: string | null = null
-  let lastResumeSave = 0
   /**
    * 切歌进行中标记。
    * 替换 `audio.src` / 调用 `load()` 会派生一次 `pause`（规范里是排队任务，异步触发），
@@ -117,79 +106,62 @@ export const usePlayerStore = defineStore('player', () => {
   /** 上一次 timeupdate 的播放位置，用于计算真实收听增量（拖动/暂停不累加） */
   let lastPos = 0
 
-  // ---------- 断点续播 ----------
+  // ---------- 会话恢复 ----------
   //
-  // 语义边界（重要）：断点续播只服务于「跨应用重启恢复」，不服务于「同一次运行内切歌」。
-  // 早期实现把两者混为一谈 —— 切歌时落盘、切回时读取，导致「上一首听了一半，
-  // 切走再切回来会接着一半继续播」。这不符合主流播放器预期：手动切回的曲目应当从
-  // 头播放，只有重启应用后才恢复上次中断的位置。
-  //
-  // 实现方式：用内存集合 `touched` 记录「本次运行内已装载过的曲目」。
-  //   - 命中 touched  → 一律从 0 开始，并清除该曲的落盘位置（避免下次重启读到陈旧值）
-  //   - 未命中 touched → 视为重启恢复，读取落盘位置
-  // touched 不落盘，随应用退出自然清空。
+  // 语义（2026-10-20 修订）：只恢复「播放队列 + 正在听的那一首歌」。
+  // - 队列 / 当前索引写 kugou.concept.queue.v1，队列变化时立即写；
+  // - 进度只保留当前曲一条（kugou.concept.position.v1），播放中 5s 节流；
+  // - 切走的历史曲目不留任何记录，重启后从头播放；
+  // - 同一次运行内切走再切回同样从头（touched）。
 
-  /** 本次运行内已装载过的曲目 hash */
+  /** 本次运行内已装载过的曲目 hash；命中即从 0 开始 */
   const touched = new Set<string>()
+  let lastPositionSave = 0
 
-  function resumeMap(): Record<string, number> {
-    return readJson<Record<string, number>>(RESUME_KEY, {})
+  function persistQueue() {
+    saveQueue(queue.value, currentIndex.value, current.value?.hash ?? null)
   }
 
-  function readResume(hash: string): number {
-    const value = resumeMap()[hash]
-    return typeof value === 'number' && Number.isFinite(value) ? value : 0
-  }
-
-  function saveResume(hash: string, seconds: number, force = false) {
-    if (!hash || !Number.isFinite(seconds) || seconds < 3) return
-    if (!force && Date.now() - lastResumeSave < RESUME_SAVE_MS) return
-    lastResumeSave = Date.now()
-    const map = resumeMap()
-    map[hash] = Math.floor(seconds)
-    writeJson(RESUME_KEY, map)
-  }
-
-  function clearResume(hash: string) {
-    const map = resumeMap()
-    if (!(hash in map)) return
-    delete map[hash]
-    writeJson(RESUME_KEY, map)
+  /** 落盘当前曲进度；试听片段、切歌窗口内一律不写 */
+  function persistPosition(force = false) {
+    if (previewMode.value) return
+    const track = current.value
+    if (!track) return
+    const now = Date.now()
+    if (!force && now - lastPositionSave < POSITION_SAVE_MS) return
+    lastPositionSave = now
+    savePosition(track.hash, audio?.currentTime ?? currentTime.value, duration.value)
   }
 
   /**
-   * 落盘当前播放位置。
-   * 切歌期间（`switching`）直接丢弃：此时 `audio` 里可能已是新曲音源，
-   * 或 `current` 已换人，任何写入都可能张冠李戴。
+   * 冷启动恢复：把上次退出时的队列、当前曲与该曲进度放回状态。
+   * 只恢复当前曲的进度，其他曲目没有持久化位置。
    */
-  function saveCurrentResume(force = false) {
-    if (switching || previewMode.value) return
-    const track = current.value
+  function restoreSession() {
+    dropLegacyResume()
+    const saved = loadQueue()
+    if (!saved) return
+    queue.value = saved.queue
+    currentIndex.value = saved.index
+    const track = queue.value[saved.index]
     if (!track) return
-    const position = audio?.currentTime ?? currentTime.value
-    // 已播到结尾（含自然结束）不再保留断点，否则重启后会停在该曲末尾
-    const total = duration.value
-    if (total > 0 && position >= total - 3) {
-      clearResume(track.hash)
-      return
-    }
-    saveResume(track.hash, position, force)
+    duration.value = track.duration || 0
+    currentTime.value = loadPosition(track.hash, duration.value)
   }
+
+  restoreSession()
 
   /**
    * 决定本次装填音源从第几秒开始。
    * @param track         目标曲目
-   * @param keepPosition  同曲重载（切换音质 / 错误重试）时沿用当前播放位置
+   * @param keepPosition  同曲重载（切换音质 / 错误重试 / 点当前曲）时沿用当前位置
    */
   function resolveStartSeconds(track: Track, keepPosition: boolean): number {
     if (keepPosition) return audio ? audio.currentTime : currentTime.value
-    if (touched.has(track.hash)) {
-      // 本次运行已听过这首：从头发起，同时清掉落盘位置，
-      // 否则退出应用后会莫名恢复到「上一轮切走时」的秒数。
-      clearResume(track.hash)
-      return 0
-    }
-    return readResume(track.hash)
+    // 本次运行已听过：从头发起，并丢弃可能残留的落盘位置
+    if (touched.has(track.hash)) return 0
+    // 恢复的当前曲：currentTime 已是上次进度；切新曲时 resetProgress 已归零
+    return currentTime.value > 0 ? currentTime.value : 0
   }
 
   // ---------- 音频元素 ----------
@@ -233,7 +205,7 @@ export const usePlayerStore = defineStore('player', () => {
       }
     }
 
-    bind('play', () => void startAudio())
+    bind('play', () => void play())
     bind('pause', () => audio?.pause())
     bind('previoustrack', () => void prev())
     bind('nexttrack', () => void next())
@@ -270,7 +242,7 @@ export const usePlayerStore = defineStore('player', () => {
       if (playing.value) useCheckinStore().addListenTime(position - lastPos)
       lastPos = position
       currentTime.value = position
-      if (playing.value) saveCurrentResume()
+      if (playing.value) persistPosition()
       updatePositionState()
     })
 
@@ -294,7 +266,7 @@ export const usePlayerStore = defineStore('player', () => {
 
     el.addEventListener('pause', () => {
       playing.value = false
-      saveCurrentResume(true)
+      persistPosition(true)
     })
 
     el.addEventListener('waiting', () => {
@@ -311,8 +283,8 @@ export const usePlayerStore = defineStore('player', () => {
     })
 
     el.addEventListener('ended', () => {
-      const track = current.value
-      if (track) clearResume(track.hash)
+      // 播完即视为没有断点；下一首会在 loadCurrent 时写入自己的起点
+      clearPosition()
       // 自然播完：先结束上报（含等级同步），再按模式切歌
       void useCheckinStore().endPlay('完整播放')
       // 单曲循环由 auto=true 表达：重播当前曲而非下一首
@@ -329,7 +301,9 @@ export const usePlayerStore = defineStore('player', () => {
     }
 
     window.addEventListener('beforeunload', () => {
-      saveCurrentResume(true)
+      // 只落盘当前曲的位置与队列，历史曲目没有任何记录
+      persistPosition(true)
+      persistQueue()
       // 尽力而为：窗口关闭时网络请求可能被中断，失败也不影响下次启动
       void useCheckinStore().endPlay('退出')
     })
@@ -404,6 +378,10 @@ export const usePlayerStore = defineStore('player', () => {
       loadedKey = key
       updateMediaSession(track)
 
+      // 当前曲与起点落盘（startAt=0 时会清除旧进度，避免重启回到上一首的位置）
+      savePosition(track.hash, startAt, duration.value)
+      persistQueue()
+
       // 元数据未就绪时 el.currentTime 赋值会被丢弃，pendingSeek 由 loadedmetadata 兜底；
       // 已就绪（同曲重载）时这里直接落位，保证 UI 与音频位置一致。
       if (startAt > 0 && Number.isFinite(el.duration) && el.duration > 0) {
@@ -443,10 +421,10 @@ export const usePlayerStore = defineStore('player', () => {
 
     // 切歌即结束上一次播放的上报会话（同一次首播可能被中途切走）
     void useCheckinStore().endPlay('切歌')
-    // 必须在 currentIndex 变更前落盘，否则位置会被记到目标曲上
-    saveCurrentResume(true)
     switching = true
     currentIndex.value = index
+    // 索引变化立即落盘；旧曲不保留任何进度
+    persistQueue()
     resetProgress()
     try {
       await loadCurrent(options.autoPlay !== false)
@@ -463,6 +441,7 @@ export const usePlayerStore = defineStore('player', () => {
   async function play(track?: Track, list?: Track[]) {
     if (list && list.length > 0) {
       queue.value = [...list]
+      persistQueue()
       const index = track ? list.findIndex((item) => item.hash === track.hash) : 0
       await playAt(index >= 0 ? index : 0)
       return
@@ -480,12 +459,15 @@ export const usePlayerStore = defineStore('player', () => {
     }
 
     if (currentIndex.value < 0) await playAt(0)
+    // 冷启动恢复的队列尚未取流：首次播放要先装填音源，而不是直接 play()
+    else if (!audio?.src) await loadCurrent(true)
     else await startAudio()
   }
 
   async function toggle() {
     if (!hasCurrent.value) return
     if (playing.value) audio?.pause()
+    else if (!audio?.src) await loadCurrent(true)
     else await startAudio()
   }
 
@@ -526,6 +508,16 @@ export const usePlayerStore = defineStore('player', () => {
     await playAt((currentIndex.value - 1 + queue.value.length) % queue.value.length)
   }
 
+  /**
+   * 精确播放位置（秒）。
+   *
+   * `currentTime` 只在 timeupdate 时更新（约 4Hz），进度条够用；
+   * 但歌词逐字扫光需要更细的粒度，直接读 audio.currentTime 才能跑到帧率。
+   */
+  function getPlaybackTime(): number {
+    return audio?.currentTime ?? currentTime.value
+  }
+
   function seek(seconds: number) {
     if (!Number.isFinite(seconds)) return
     const upper = duration.value || seconds
@@ -536,13 +528,8 @@ export const usePlayerStore = defineStore('player', () => {
     lastPos = target
     // 切歌窗口内的 seek 通常来自旧曲的收尾逻辑，不应写进新曲的记录
     if (switching || previewMode.value || !current.value) return
-    const hash = current.value.hash
-    // 回到开头或拖到结尾，视同「没有有效断点」，避免重启后停在这些无意义的位置
-    if (target < 3 || (duration.value > 0 && target >= duration.value - 3)) {
-      clearResume(hash)
-      return
-    }
-    saveResume(hash, target, true)
+    // 回到开头或拖到结尾由 savePosition 自动清除
+    savePosition(current.value.hash, target, duration.value)
   }
 
   function setVolume(value: number) {
@@ -580,6 +567,8 @@ export const usePlayerStore = defineStore('player', () => {
     if (quality.value === nextQuality) return
     quality.value = nextQuality
     if (!current.value) return
+    // 冷启动恢复的队列还没取流：只更新偏好，等首次播放时按新音质装填
+    if (!audio?.src) return
     const wasPlaying = playing.value
     loadedKey = ''
     // 同一首曲的重载：沿用当前位置，不能退回 0
@@ -608,6 +597,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (tracks.length === 0) return
     const known = new Set(queue.value.map((item) => item.hash))
     queue.value = [...queue.value, ...tracks.filter((item) => !known.has(item.hash))]
+    persistQueue()
   }
 
   async function removeAt(index: number) {
@@ -615,14 +605,14 @@ export const usePlayerStore = defineStore('player', () => {
 
     if (index === currentIndex.value) {
       void useCheckinStore().endPlay('停止')
-      // 用户主动移除当前曲，不保留断点（下次点播应从头开始）
-      const removedHash = current.value?.hash
-      if (removedHash) clearResume(removedHash)
+      // 用户主动移除当前曲：不保留进度（下次点播从头开始）
+      clearPosition()
       switching = true
       audio?.pause()
       if (audio) audio.src = ''
       loadedKey = ''
       queue.value = queue.value.filter((_, i) => i !== index)
+      persistQueue()
       if (queue.value.length === 0) {
         currentIndex.value = -1
         playing.value = false
@@ -643,6 +633,7 @@ export const usePlayerStore = defineStore('player', () => {
 
     queue.value = queue.value.filter((_, i) => i !== index)
     if (index < currentIndex.value) currentIndex.value -= 1
+    persistQueue()
   }
 
   /** 拖拽排序：保持当前曲目仍在播放（只调整索引） */
@@ -660,6 +651,7 @@ export const usePlayerStore = defineStore('player', () => {
     if (currentTrack) {
       currentIndex.value = queue.value.findIndex((item) => item.hash === currentTrack.hash)
     }
+    persistQueue()
   }
 
   function clear() {
@@ -668,12 +660,16 @@ export const usePlayerStore = defineStore('player', () => {
     audio?.pause()
     if (audio) audio.src = ''
     loadedKey = ''
+    // 没有曲目就没有「实际音质」，留着会让播放栏的降级提示指向上一首
+    streamQuality.value = null
     queue.value = []
     currentIndex.value = -1
     playing.value = false
     buffering.value = false
     error.value = null
     resetProgress()
+    clearQueue()
+    clearPosition()
     switching = false
   }
 
@@ -705,6 +701,7 @@ export const usePlayerStore = defineStore('player', () => {
     next,
     prev,
     seek,
+    getPlaybackTime,
     setVolume,
     toggleMute,
     setMode,

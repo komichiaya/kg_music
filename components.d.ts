@@ -12,13 +12,18 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AppIcon: typeof import('./src/components/common/AppIcon.vue')['default']
+    ArtistPicker: typeof import('./src/components/common/ArtistPicker.vue')['default']
     Backdrop: typeof import('./src/components/layout/Backdrop.vue')['default']
+    ContextMenu: typeof import('./src/components/common/ContextMenu.vue')['default']
+    CreatePlaylistDialog: typeof import('./src/components/common/CreatePlaylistDialog.vue')['default']
+    EditPlaylistDialog: typeof import('./src/components/common/EditPlaylistDialog.vue')['default']
     ElDialog: typeof import('element-plus/es')['ElDialog']
     ElInput: typeof import('element-plus/es')['ElInput']
     ElOption: typeof import('element-plus/es')['ElOption']
     ElSelect: typeof import('element-plus/es')['ElSelect']
     ElSwitch: typeof import('element-plus/es')['ElSwitch']
     EmptyState: typeof import('./src/components/common/EmptyState.vue')['default']
+    MiniPlayer: typeof import('./src/components/player/MiniPlayer.vue')['default']
     PageShell: typeof import('./src/components/common/PageShell.vue')['default']
     PlayerBar: typeof import('./src/components/player/PlayerBar.vue')['default']
     PlaylistPicker: typeof import('./src/components/common/PlaylistPicker.vue')['default']

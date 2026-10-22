@@ -16,6 +16,12 @@ function pickString(data: Record<string, unknown>, keys: string[]): string | nul
   return null
 }
 
+/** 到期时间：非会员时上游会给 "0" / 空串，统一收敛成 null，避免被渲染成 1970 年 */
+function pickDateString(data: Record<string, unknown>, keys: string[]): string | null {
+  const text = pickString(data, keys)
+  return text && text !== '0' ? text : null
+}
+
 function pickNumber(data: Record<string, unknown>, keys: string[]): number | null {
   for (const key of keys) {
     const value = data[key]
@@ -125,6 +131,6 @@ export async function fetchVipDetail(): Promise<VipInfo> {
   return {
     isVip,
     vipType,
-    expireAt: pickString(data, ['vip_end_time', 'vip_y_endtime']),
+    expireAt: pickDateString(data, ['vip_end_time', 'vip_y_endtime']),
   }
 }

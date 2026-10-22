@@ -260,6 +260,15 @@ class UpstreamService extends EventEmitter {
       platform: "lite"
     };
     for (const key of PROXY_KEYS) delete env[key];
+    if (app.isPackaged) {
+      const dataDir = path.join(app.getPath("userData"), "upstream");
+      try {
+        fs$1.mkdirSync(dataDir, { recursive: true });
+        env.KUGOU_API_DEVICE_FILE = path.join(dataDir, "device.json");
+      } catch (error) {
+        console.warn("[upstream] 创建设备身份目录失败，将退化为写入安装目录", error);
+      }
+    }
     const args = [path.join(this.apiDir, "app.js"), `--port=${this.port}`, "--swagger=false", "--platform=lite"];
     console.info(`[upstream] 启动子进程：${path.join(this.apiDir, "app.js")} (port=${this.port})`);
     const child = spawn(process.execPath, args, {
@@ -455,6 +464,56 @@ function pushLyricData(payload) {
   if (!isAlive()) return;
   lyricWin == null ? void 0 : lyricWin.webContents.send("lyric-window:data", payload);
 }
+const MINI_SIZE = { width: 380, height: 120 };
+const NORMAL_MIN_SIZE = { width: 960, height: 640 };
+const savedStates = /* @__PURE__ */ new WeakMap();
+const miniWindows = /* @__PURE__ */ new WeakSet();
+function isMiniWindow(win2) {
+  return !win2.isDestroyed() && miniWindows.has(win2);
+}
+function clampToWorkArea(bounds, size) {
+  const area = screen.getDisplayMatching(bounds).workArea;
+  const x = Math.min(Math.max(bounds.x, area.x + 8), area.x + area.width - size.width - 8);
+  const y = Math.min(Math.max(bounds.y, area.y + 8), area.y + area.height - size.height - 8);
+  return { x: Math.round(x), y: Math.round(y), width: size.width, height: size.height };
+}
+function setMiniWindow(win2, enabled) {
+  if (win2.isDestroyed()) return false;
+  const current = isMiniWindow(win2);
+  if (enabled === current) return current;
+  if (enabled) {
+    const maximized = win2.isMaximized();
+    savedStates.set(win2, {
+      bounds: maximized ? win2.getNormalBounds() : win2.getBounds(),
+      maximized,
+      resizable: win2.isResizable(),
+      maximizable: win2.isMaximizable(),
+      fullScreenable: win2.isFullScreenable()
+    });
+    if (maximized) win2.unmaximize();
+    win2.setMinimumSize(MINI_SIZE.width, MINI_SIZE.height);
+    win2.setResizable(false);
+    win2.setMaximizable(false);
+    win2.setFullScreenable(false);
+    win2.setAlwaysOnTop(true, "floating");
+    win2.setBounds(clampToWorkArea(win2.getBounds(), MINI_SIZE));
+    miniWindows.add(win2);
+    return true;
+  }
+  const saved = savedStates.get(win2);
+  win2.setAlwaysOnTop(false);
+  win2.setFullScreenable((saved == null ? void 0 : saved.fullScreenable) ?? true);
+  win2.setResizable((saved == null ? void 0 : saved.resizable) ?? true);
+  win2.setMaximizable((saved == null ? void 0 : saved.maximizable) ?? true);
+  win2.setMinimumSize(NORMAL_MIN_SIZE.width, NORMAL_MIN_SIZE.height);
+  miniWindows.delete(win2);
+  if (saved) {
+    win2.setBounds(saved.bounds);
+    if (saved.maximized) win2.maximize();
+  }
+  savedStates.delete(win2);
+  return false;
+}
 function windowOf(source) {
   return BrowserWindow.fromWebContents(source.sender);
 }
@@ -506,6 +565,15 @@ function registerIpcHandlers() {
     var _a;
     return ((_a = windowOf(event)) == null ? void 0 : _a.isMaximized()) ?? false;
   });
+  ipcMain.handle("window:set-mini", (event, enabled) => {
+    const win2 = windowOf(event);
+    if (!win2) return false;
+    return setMiniWindow(win2, enabled === true);
+  });
+  ipcMain.handle("window:is-mini", (event) => {
+    const win2 = windowOf(event);
+    return win2 ? isMiniWindow(win2) : false;
+  });
   ipcMain.handle("credential:get", () => readCredential());
   ipcMain.handle("credential:set", async (_event, credential) => {
     await writeCredential(credential);
@@ -546,39 +614,63 @@ const DEFAULT_BOUNDS = { width: 1280, height: 800 };
 let win = null;
 let quitReady = false;
 let saveTimer = null;
+let lastNormalBounds = null;
+let boundsSuppressUntil = 0;
 function sanitizeBounds(state) {
   if (!state) return { ...DEFAULT_BOUNDS };
-  const width = Math.max(960, Math.round(state.width));
-  const height = Math.max(640, Math.round(state.height));
+  const anchor = {
+    x: typeof state.x === "number" ? state.x : 0,
+    y: typeof state.y === "number" ? state.y : 0
+  };
+  const area = screen.getDisplayNearestPoint(anchor).workArea;
+  const width = Math.max(960, Math.min(Math.round(state.width), area.width));
+  const height = Math.max(640, Math.min(Math.round(state.height), area.height));
   if (typeof state.x !== "number" || typeof state.y !== "number") return { width, height };
   const visible = screen.getAllDisplays().some((display) => {
-    const area = display.workArea;
-    return state.x < area.x + area.width && state.x + width > area.x && state.y < area.y + area.height && state.y + height > area.y;
+    const workArea = display.workArea;
+    return state.x < workArea.x + workArea.width && state.x + width > workArea.x && state.y < workArea.y + workArea.height && state.y + height > workArea.y;
   });
   return visible ? { width, height, x: Math.round(state.x), y: Math.round(state.y) } : { width, height };
 }
+function rememberNormalBounds(target) {
+  if (target.isDestroyed()) return;
+  if (Date.now() < boundsSuppressUntil) return;
+  if (isMiniWindow(target) || target.isMaximized() || target.isMinimized() || target.isFullScreen()) {
+    return;
+  }
+  const bounds = target.getBounds();
+  const area = screen.getDisplayMatching(bounds).workArea;
+  if (bounds.width >= area.width - 8 && bounds.height >= area.height - 8) return;
+  lastNormalBounds = bounds;
+}
 function collectWindowState(target) {
-  const bounds = target.isMaximized() ? target.getNormalBounds() : target.getBounds();
+  const current = target.getBounds();
+  const maximized = target.isMaximized();
+  const bounds = maximized ? lastNormalBounds ?? target.getNormalBounds() : current;
   return {
     width: bounds.width,
     height: bounds.height,
     x: bounds.x,
     y: bounds.y,
-    maximized: target.isMaximized()
+    maximized
   };
 }
 function scheduleSaveWindowState(target) {
   if (target.isDestroyed()) return;
+  if (isMiniWindow(target)) return;
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    if (!target.isDestroyed()) void writeWindowState(collectWindowState(target));
+    if (target.isDestroyed() || isMiniWindow(target)) return;
+    rememberNormalBounds(target);
+    void writeWindowState(collectWindowState(target));
   }, 400);
 }
 async function createWindow() {
   const state = await readWindowState();
+  const initial = sanitizeBounds(state);
   win = new BrowserWindow({
-    ...sanitizeBounds(state),
+    ...initial,
     minWidth: 960,
     minHeight: 640,
     show: false,
@@ -595,11 +687,25 @@ async function createWindow() {
       // ESM 预加载脚本要求关闭沙箱；特权能力仍被限制在 preload 白名单内
       sandbox: false,
       webSecurity: true,
-      spellcheck: false
+      spellcheck: false,
+      // 迷你模式/最小化时仍需推进进度与桌面歌词，禁用后台节流
+      backgroundThrottling: false
     }
   });
-  if (state == null ? void 0 : state.maximized) win.maximize();
-  win.once("ready-to-show", () => win == null ? void 0 : win.show());
+  lastNormalBounds = {
+    width: initial.width,
+    height: initial.height,
+    x: initial.x ?? 0,
+    y: initial.y ?? 0
+  };
+  if (state == null ? void 0 : state.maximized) {
+    boundsSuppressUntil = Date.now() + 1500;
+    win.maximize();
+  }
+  win.once("ready-to-show", () => {
+    win == null ? void 0 : win.show();
+    if (win && !win.isMaximized()) rememberNormalBounds(win);
+  });
   win.webContents.on("did-finish-load", () => {
     console.log("[main] 渲染层加载完成");
   });
@@ -610,15 +716,25 @@ async function createWindow() {
     if (!win || win.isDestroyed()) return;
     win.webContents.send("window:maximized-changed", win.isMaximized());
   };
-  win.on("maximize", notifyMaximize);
-  win.on("unmaximize", notifyMaximize);
+  win.on("maximize", () => {
+    boundsSuppressUntil = Date.now() + 1200;
+    notifyMaximize();
+  });
+  win.on("unmaximize", () => {
+    boundsSuppressUntil = Date.now() + 1200;
+    notifyMaximize();
+  });
   win.on("resize", () => win && scheduleSaveWindowState(win));
   win.on("move", () => win && scheduleSaveWindowState(win));
   win.on("close", () => {
-    if (win && !win.isDestroyed()) void writeWindowState(collectWindowState(win));
+    if (win && !win.isDestroyed() && !isMiniWindow(win)) {
+      rememberNormalBounds(win);
+      void writeWindowState(collectWindowState(win));
+    }
   });
   win.on("closed", () => {
     win = null;
+    lastNormalBounds = null;
     closeLyricWindow();
   });
   win.webContents.setWindowOpenHandler(({ url }) => {

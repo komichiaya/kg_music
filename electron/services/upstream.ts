@@ -216,6 +216,20 @@ export class UpstreamService extends EventEmitter {
     }
     for (const key of PROXY_KEYS) delete env[key]
 
+    // 打包后上游位于 resources 目录，AppImage / 签名后的 .app 那里是只读的，
+    // 而上游会把设备身份写到自身目录（.device.json）。写不进去就每次启动换一个设备号，
+    // 容易触发酷狗风控（20028），所以显式指到用户数据目录。
+    // 开发期不设这个变量，保持沿用仓库里已有的 .device.json。
+    if (app.isPackaged) {
+      const dataDir = path.join(app.getPath('userData'), 'upstream')
+      try {
+        fs.mkdirSync(dataDir, { recursive: true })
+        env.KUGOU_API_DEVICE_FILE = path.join(dataDir, 'device.json')
+      } catch (error) {
+        console.warn('[upstream] 创建设备身份目录失败，将退化为写入安装目录', error)
+      }
+    }
+
     const args = [path.join(this.apiDir, 'app.js'), `--port=${this.port}`, '--swagger=false', '--platform=lite']
 
     console.info(`[upstream] 启动子进程：${path.join(this.apiDir, 'app.js')} (port=${this.port})`)

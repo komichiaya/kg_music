@@ -2,9 +2,11 @@
 /**
  * 个人中心
  *
- * P1：资料卡接真实 /user/info（昵称 / 头像 / 等级 / 绑定手机）。
- * P5：完整签到链——会话校验 → 等级查询 → 一天 VIP → 首播上报，
- *     每一步的真实状态与失败原因都在链路卡片中展示，可手动重试。
+ * 资料卡接真实 /user/info（昵称 / 头像 / 等级 / 绑定手机），
+ * 统计区展示今日签到、会员状态、听歌等级与累计时长。
+ *
+ * 签到链本身在 App.vue 里按「会话校验 → 等级查询 → 一天 VIP → 首播上报」自动跑，
+ * 本页只展示状态，不再铺一张逐步执行明细的卡片。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -14,7 +16,8 @@ import UserAvatar from '@/components/common/UserAvatar.vue'
 import { useAuthStore } from '@/stores/auth'
 import { useVipStore } from '@/stores/vip'
 import { useProfileMetaStore } from '@/stores/profile'
-import { useCheckinStore, type CheckinStep } from '@/stores/checkin'
+import { useCheckinStore } from '@/stores/checkin'
+import { formatDateTime } from '@/utils/format'
 
 const router = useRouter()
 const auth = useAuthStore()
@@ -35,7 +38,8 @@ const vipLabel = computed(() => {
   return auth.vipActive ? 'VIP 生效中' : 'VIP —'
 })
 
-const vipExpire = computed(() => meta.vip?.expireAt ?? vip.expireAt ?? null)
+/** 上游给的是时间戳或 ISO 串，统一转成 2026-10-22 这样的展示格式；无效值返回 null，整行不渲染 */
+const vipExpire = computed(() => formatDateTime(meta.vip?.expireAt ?? vip.expireAt))
 
 const mobileLabel = computed(() => auth.profile?.mobile ?? null)
 
@@ -64,48 +68,11 @@ const stats = computed(() => [
   },
 ])
 
-const STATE_LABEL: Record<CheckinStep['state'], string> = {
-  done: '已完成',
-  running: '进行中',
-  pending: '待执行',
-  failed: '失败',
-  skipped: '未登录',
-}
-
-const STATE_TONE: Record<CheckinStep['state'], string> = {
-  done: 'ok',
-  running: 'muted',
-  pending: 'muted',
-  failed: 'err',
-  skipped: 'muted',
-}
-
-const signinSteps = computed(() =>
-  checkin.steps.map((step) => ({
-    ...step,
-    stateLabel: STATE_LABEL[step.state],
-    pillTone: STATE_TONE[step.state],
-  }))
-)
-
 const claimDisabled = computed(() => vip.claiming || (vip.claimedToday && !vip.failed))
 
 async function claimVip() {
   if (!auth.userId) return
   await vip.claimToday(auth.userId, { remoteCheck: true })
-}
-
-async function retryChain() {
-  if (refreshing.value || checkin.running) return
-  refreshing.value = true
-  refreshError.value = null
-  try {
-    await checkin.retry()
-  } catch (error) {
-    refreshError.value = error instanceof Error ? error.message : '签到链重试失败'
-  } finally {
-    refreshing.value = false
-  }
 }
 
 async function refreshProfile() {
@@ -144,9 +111,19 @@ watch(
   <PageShell
     eyebrow="Profile"
     title="个人中心"
-    subtitle="打开即签到：会话校验 → 等级查询 → 一天 VIP；第一次真实播放会自动上报听歌时长。"
+    subtitle="每天首次打开自动签到，可领取一天 VIP。"
   >
     <template #actions>
+      <button
+        v-if="!vip.claimedToday"
+        class="ghost-button"
+        type="button"
+        :disabled="claimDisabled"
+        @click="claimVip"
+      >
+        <AppIcon name="vip" :size="14" />
+        {{ vip.claiming ? '领取中…' : '领取一天 VIP' }}
+      </button>
       <button class="ghost-button" type="button" :disabled="refreshing" @click="refreshProfile">
         <AppIcon name="refresh" :size="14" />
         {{ refreshing ? '同步中…' : '刷新资料' }}
@@ -163,7 +140,6 @@ watch(
       <UserAvatar :src="auth.profile?.avatar" :name="auth.displayName" :size="72" />
       <div class="identity__meta">
         <h2 class="identity__name">{{ auth.displayName }}</h2>
-        <p class="identity__id tabular">userid {{ auth.userId }}</p>
         <div class="identity__badges">
           <span class="pill" :class="(meta.vip?.isVip || auth.vipActive) ? 'pill--warn' : 'pill--muted'">{{ vipLabel }}</span>
           <span class="pill" :class="`pill--${vip.tone}`">{{ vip.statusLabel }}</span>
@@ -189,48 +165,6 @@ watch(
         <span class="stat__value">{{ stat.value }}</span>
       </article>
     </div>
-
-    <section class="section">
-      <div class="section__head">
-        <h3 class="section__title">每日签到链路</h3>
-        <span class="section__hint">Auto Sign-in</span>
-      </div>
-      <div class="chain panel">
-        <ol class="chain__list">
-          <li v-for="(step, index) in signinSteps" :key="step.id" class="chain__item">
-            <span class="chain__index tabular">{{ String(index + 1).padStart(2, '0') }}</span>
-            <span class="chain__body">
-              <span class="chain__title">{{ step.title }}</span>
-              <span class="chain__desc">{{ step.desc }}</span>
-              <span v-if="step.detail" class="chain__detail" :class="`chain__detail--${step.pillTone}`">
-                {{ step.detail }}
-              </span>
-            </span>
-            <span class="pill chain__state" :class="`pill--${step.pillTone}`">{{ step.stateLabel }}</span>
-          </li>
-        </ol>
-        <div class="chain__foot">
-          <p class="chain__note" :class="{ 'chain__note--err': checkin.steps.some((s) => s.state === 'failed') }">
-            {{ checkin.message }}
-          </p>
-          <div class="chain__actions">
-            <button class="ghost-button" type="button" :disabled="refreshing || checkin.running" @click="retryChain">
-              <AppIcon name="refresh" :size="14" />
-              {{ checkin.running ? '执行中…' : '重新校验' }}
-            </button>
-            <button
-              class="brand-button"
-              type="button"
-              :disabled="claimDisabled"
-              @click="claimVip"
-            >
-              <AppIcon name="vip" :size="14" />
-              {{ vip.claiming ? '领取中…' : vip.claimedToday ? '今日已领取' : '立即领取一天 VIP' }}
-            </button>
-          </div>
-        </div>
-      </div>
-    </section>
   </PageShell>
 </template>
 
@@ -259,13 +193,6 @@ watch(
 .identity__name {
   font-size: 20px;
   letter-spacing: -0.01em;
-}
-
-.identity__id {
-  margin-top: 4px;
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  color: var(--text-3);
 }
 
 .identity__badges {
@@ -361,97 +288,4 @@ watch(
   font-weight: 600;
 }
 
-.chain {
-  padding: 8px 6px 6px;
-}
-
-.chain__list {
-  display: flex;
-  flex-direction: column;
-}
-
-.chain__item {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 18px;
-  border-bottom: 1px solid var(--stroke);
-}
-
-.chain__item:last-child {
-  border-bottom: none;
-}
-
-.chain__index {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--brand-1);
-  opacity: 0.8;
-}
-
-.chain__body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.chain__title {
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.chain__desc {
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-
-.chain__detail {
-  margin-top: 2px;
-  font-size: 11.5px;
-  color: var(--text-2);
-}
-
-.chain__detail--ok {
-  color: var(--ok);
-}
-
-.chain__detail--err {
-  color: var(--err);
-}
-
-.chain__state {
-  margin-left: auto;
-  flex: none;
-}
-
-.chain__foot {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px 16px;
-  padding: 14px 18px;
-  border-top: 1px solid var(--stroke);
-}
-
-.chain__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: none;
-}
-
-.chain__note {
-  font-size: 11.5px;
-  color: var(--text-3);
-}
-
-.chain__note--err {
-  color: var(--err);
-}
-
-.chain__foot .brand-button {
-  flex: none;
-}
 </style>

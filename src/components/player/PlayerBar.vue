@@ -14,13 +14,23 @@ import {
 } from '@/stores/player'
 import AppIcon from '@/components/common/AppIcon.vue'
 import QueuePanel from '@/components/player/QueuePanel.vue'
+import { useContextMenuStore } from '@/stores/contextMenu'
+import { useSettingsStore } from '@/stores/settings'
 import { formatTime } from '@/utils/format'
+import { useTrackActions } from '@/composables/useTrackActions'
 import type { SongQuality } from '@/types/kugou'
 
 const router = useRouter()
 const player = usePlayerStore()
+const settings = useSettingsStore()
 const queueOpen = ref(false)
 const qualityOpen = ref(false)
+
+function enterMini() {
+  qualityOpen.value = false
+  queueOpen.value = false
+  void settings.setMini(true)
+}
 
 /** 点击封面进入歌词页；无在播曲目时不响应 */
 function openLyrics() {
@@ -35,13 +45,42 @@ const modeIcon = computed(() => {
   return 'repeat'
 })
 
+const menu = useContextMenuStore()
+const { navItems } = useTrackActions()
+
+/** 播放栏当前曲目右键：跳转歌手 / 专辑 */
+function openNowMenu(event: MouseEvent) {
+  const track = player.current
+  if (!track) return
+  menu.open(event, navItems(track))
+}
+
 const qualityOptions = (Object.keys(QUALITY_LABEL) as SongQuality[]).map((value) => ({
   value,
   label: QUALITY_LABEL[value],
 }))
 
-const activeQuality = computed<SongQuality>(() => player.streamQuality ?? player.quality)
-const qualityLabel = computed(() => QUALITY_LABEL[activeQuality.value])
+/**
+ * 播放栏展示的是**用户选的音质**（偏好），不是实际取到的音质。
+ *
+ * 之前这里取的是 `streamQuality ?? quality`，而取流会按权限降级
+ * （`downgradeChain`：未登录直接只请求 128；无会员权限时逐级回退），
+ * 于是选了 320K 也会一直显示「标准 128K」，看起来像设置没生效。
+ * 实际音质放在 tooltip 与菜单里标注，避免把「降级结果」当成「设置值」。
+ */
+const qualityLabel = computed(() => QUALITY_LABEL[player.quality])
+
+/** 实际拿到的音质，可能因权限低于所选 */
+const actualQuality = computed<SongQuality | null>(() => player.streamQuality)
+const degraded = computed(
+  () => actualQuality.value !== null && actualQuality.value !== player.quality
+)
+
+const qualityTitle = computed(() => {
+  const base = `音质：${qualityLabel.value}`
+  if (!degraded.value || !actualQuality.value) return base
+  return `${base}（当前实际 ${QUALITY_LABEL[actualQuality.value]}，无权限时自动降级）`
+})
 
 const progressPercent = computed(() => `${(player.progress * 100).toFixed(2)}%`)
 const volumePercent = computed(() => `${(player.effectiveVolume * 100).toFixed(0)}%`)
@@ -72,7 +111,7 @@ async function chooseQuality(value: SongQuality) {
     </div>
 
     <div class="playerbar__inner">
-      <div class="now">
+      <div class="now" @contextmenu.prevent="openNowMenu">
         <button
           class="now__cover"
           type="button"
@@ -190,11 +229,15 @@ async function chooseQuality(value: SongQuality) {
           <AppIcon name="list" :size="17" />
         </button>
 
+        <button class="icon-button" type="button" title="迷你模式" @click="enterMini">
+          <AppIcon name="mini" :size="17" />
+        </button>
+
         <div class="quality">
           <button
             class="pill pill--plain quality__trigger"
             type="button"
-            :title="`音质：${qualityLabel}`"
+            :title="qualityTitle"
             @click="qualityOpen = !qualityOpen"
           >
             {{ qualityLabel }}
@@ -218,7 +261,12 @@ async function chooseQuality(value: SongQuality) {
                   name="check"
                   :size="13"
                 />
-                <span v-else-if="option.value === activeQuality" class="menu__hint">当前</span>
+                <span
+                  v-else-if="degraded && option.value === actualQuality"
+                  class="menu__hint"
+                >
+                  实际
+                </span>
               </button>
               <p class="menu__note">
                 高音质需登录并具备会员权限，无权限时自动降级。

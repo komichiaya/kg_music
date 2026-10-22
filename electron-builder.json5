@@ -11,6 +11,15 @@
     "dist",
     "dist-electron"
   ],
+  // 把上游 KuGouMusicApi 一起打进安装包（由 scripts/prepare-upstream.mjs 预先生成）。
+  // 落点是 resources/KuGouMusicApi，与 electron/services/upstream.ts 的 resolveApiDir() 对应。
+  // 上游由主进程用「Electron 二进制 + ELECTRON_RUN_AS_NODE」拉起，接收方无需装 Node。
+  "extraResources": [
+    {
+      "from": "build/upstream",
+      "to": "KuGouMusicApi"
+    }
+  ],
   "mac": {
     "target": [
       "dmg"
