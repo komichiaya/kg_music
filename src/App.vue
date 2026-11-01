@@ -7,7 +7,7 @@
  * - 桌面歌词窗口（transparent）只渲染 RouterView，并跳过主窗口的所有初始化逻辑
  * - 歌词改为独立路由页 /lyrics（点击播放栏封面进入），不再有侧栏 / 全屏两种形态
  */
-import { computed, onBeforeUnmount, onMounted, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import Backdrop from '@/components/layout/Backdrop.vue'
 import TitleBar from '@/components/layout/TitleBar.vue'
@@ -44,6 +44,48 @@ const isBlank = computed(() => route.meta.blank === true)
 const isTransparent = computed(() => route.meta.transparent === true)
 /** 迷你模式只在主窗口生效；登录页与桌面歌词窗口不参与 */
 const isMini = computed(() => settings.miniMode && !isBlank.value && !isTransparent.value)
+
+/**
+ * 页面滚动容器。
+ *
+ * 整个应用只有 `.app__stage` 在滚，window 本身不滚（body overflow: hidden），
+ * 所以 router 的 `scrollBehavior` 对它无效 —— 那是给 window/document 用的。
+ */
+const stage = ref<HTMLElement | null>(null)
+
+/**
+ * 把滚动容器归零。
+ *
+ * 容器上有 `scroll-behavior: smooth`，直接赋 `scrollTop = 0` 会让归零变成一段
+ * 肉眼可见的回滚动画，必须显式指定 `behavior: 'instant'`。
+ */
+function resetStageScroll() {
+  stage.value?.scrollTo({ top: 0, behavior: 'instant' })
+}
+
+/** 上一次的路由名，用来区分「换页」与「同一页换参数」 */
+let previousRouteName: unknown = null
+
+/**
+ * 路由变化后重置滚动位置。
+ *
+ * `.app__stage` 在路由切换时是复用的同一个 DOM 节点，浏览器不会自动重置 scrollTop，
+ * 于是「在歌手 A 页滑到中段 → 切到歌手 B」时，新页面会停在上一位歌手的中段位置。
+ *
+ * 分两种情况处理，否则会有可见的跳动：
+ * - **同一页换参数**（`/artist/A → /artist/B`、`/search?q=x → ?q=y`）：组件实例被复用，
+ *   连 Transition 都不会跑，只能在这里立刻归零；
+ * - **换页**：交给 Transition 的 `after-leave` —— 那时旧页已移除、新页还没插入，
+ *   归零不会让正在淡出的旧页「跳」一下（在路由变化瞬间归零就会看到这个跳动）。
+ */
+watch(
+  () => route.fullPath,
+  () => {
+    const samePage = route.name === previousRouteName
+    previousRouteName = route.name
+    if (samePage) resetStageScroll()
+  }
+)
 
 /** 把当前行与相邻两行推给桌面歌词窗口（含逐字填充比例） */
 let lastPushAt = 0
@@ -238,6 +280,34 @@ if (!isTransparent.value) {
       if (settings.lyricDesktop !== open) settings.lyricDesktop = open
     })
     onBeforeUnmount(offState)
+
+    /**
+     * 系统偏好以 Main 为准：托盘菜单也能改「开机自启」，
+     * 那条路径不经过本页开关，必须靠广播回填，否则界面与系统状态不一致。
+     */
+    onBeforeUnmount(settings.bindSystemBridge())
+
+    /**
+     * 托盘菜单的「迷你播放器 / 设置」由 Main 转发过来。
+     * 迷你态与路由都在渲染层，Main 直接改窗口几何会让两边状态脱节。
+     */
+    if (bridge.system) {
+      onBeforeUnmount(
+        bridge.system.onTrayCommand((command) => {
+          if (command === 'mini') {
+            void settings.setMini(true)
+            return
+          }
+          if (command === 'restore') {
+            void settings.setMini(false)
+            return
+          }
+          if (command === 'settings' && route.name !== 'settings') {
+            void router.push({ name: 'settings' })
+          }
+        })
+      )
+    }
   }
 }
 </script>
@@ -255,9 +325,13 @@ if (!isTransparent.value) {
         <TitleBar />
         <div class="app__body">
           <Sidebar />
-          <main class="app__stage">
+          <main ref="stage" class="app__stage">
             <RouterView v-slot="{ Component }">
-              <Transition name="page" mode="out-in">
+              <!--
+                after-leave 时旧页已移除、新页尚未插入，此刻归零不会让淡出的旧页跳动；
+                这正是「换页时新页面从顶部开始」的实现位置（同页换参数见上面的 watch）。
+              -->
+              <Transition name="page" mode="out-in" @after-leave="resetStageScroll">
                 <component :is="Component" />
               </Transition>
             </RouterView>

@@ -5,8 +5,9 @@
  * - `/playlist/track/all` 的 `id` 必须是 `global_collection_id`（gid），传 specialid 会 20010。
  * - 歌单曲目字段与歌曲搜索不同构，统一由 api/track.ts 归一化。
  */
-import { apiGet, apiPost, ApiError } from './request'
+import { apiGet, apiPost, ApiError, http } from './request'
 import { normalizeTracks } from './track'
+import { COVER_MAX_BYTES } from '@/utils/image'
 import type { KugouBody } from './login'
 import type { PlaylistSummary, Track } from '@/types/kugou'
 
@@ -46,7 +47,13 @@ function toPlaylist(item: Raw, currentUserId: string | null): PlaylistSummary {
   }
 }
 
-/** 歌单详情（批量接口，这里取第一条） */
+/**
+ * 歌单详情（批量接口，这里取第一条）
+ *
+ * `timestamp` 同时放 query：上游 apicache 缓存键是 `hostname + originalUrl`，
+ * 只带 body 会让 URL 恒定，改完封面/名字立刻回读详情会拿到 2 分钟前的旧数据
+ * （2026-10-26 实测：无 query ts 读到空 pic，带 query ts 读到新 pic）。
+ */
 export async function fetchPlaylistDetail(
   gid: string,
   currentUserId: string | null = null
@@ -54,7 +61,7 @@ export async function fetchPlaylistDetail(
   const body = await apiPost<KugouBody<Raw[] | Raw>>(
     '/playlist/detail',
     { timestamp: Date.now() },
-    { params: { ids: gid }, timeout: 15_000 }
+    { params: { ids: gid, timestamp: Date.now() }, timeout: 15_000 }
   )
 
   if (body?.status !== 1) {
@@ -102,12 +109,19 @@ export async function fetchPlaylistTracks(
   return { tracks, total: num(body.data?.count) ?? tracks.length }
 }
 
-/** 我的歌单列表 */
+/**
+ * 我的歌单列表
+ *
+ * `timestamp` 必须放在 **query** 里（不是 body）：上游 apicache 的缓存键是
+ * `hostname + originalUrl`，只带 body 的 timestamp 会让 URL 恒定不变，
+ * 于是「新建/改名/改封面后重新拉列表」会命中 2 分钟内的旧缓存，
+ * 表现为侧栏迟迟看不到变化（2026-10-26 实测确认）。
+ */
 export async function fetchUserPlaylists(userid: string): Promise<PlaylistSummary[]> {
   const body = await apiPost<KugouBody<{ info?: Raw[]; total_ver?: unknown }>>(
     '/user/playlist',
     { timestamp: Date.now() },
-    { params: { pagesize: 50 }, timeout: 15_000 }
+    { params: { pagesize: 50, timestamp: Date.now() }, timeout: 15_000 }
   )
 
   if (body?.status !== 1) {
@@ -184,10 +198,87 @@ export async function addTrackToPlaylist(listid: string, track: Track): Promise<
  *   重复添加同一首会改写 fileid，因此删除前必须重新读一次歌单曲目，不能用列表里的旧值。
  * ============================================================ */
 
-/** 修改「我的歌单」名称 / 简介（传 undefined 表示不改该项） */
+/* ============================================================
+ * 歌单自定义封面
+ *
+ * 实测结论（2026-10-26，真实账号）：
+ * - 上传与设置是**两步**：`/playlist/pic/upload` 只负责把图片推到图床并返回 `FileName`，
+ *   真正写入歌单要走 `/playlist/update` 的 `pic=custom/<FileName>`。
+ * - 上传接口**不需要登录**（鉴权在改歌单那一步）；上游为此开了二进制通道
+ *   （server.js 的 `express.raw({type:'application/octet-stream'})`），
+ *   所以这里不能用 apiPost（它固定 Content-Type: application/json）。
+ * - 新建歌单接口（`/playlist/add`）**没有 pic 字段**，只能建完再 update 一次。
+ * - 自定义封面的回读地址是 `http://c1.kgimg.com/custom/{size}/...`，
+ *   与系统封面的 `stdmusic/` 前缀不同，但同样支持 `{size}` 占位。
+ * ============================================================ */
+
+/**
+ * 自定义封面允许的图片类型（图床按扩展名分派，猜错会拿不到 FileName）
+ *
+ * 注意：真正提交给图床的是 `utils/image.ts` 里 `prepareCoverImage()` 处理后的 JPEG，
+ * 这里保留多格式只是为了给用户更宽松的「可选文件类型」。
+ */
+const COVER_MIME_EXT: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/png': '.jpg',
+  'image/webp': '.jpg',
+  'image/gif': '.jpg',
+}
+
+/**
+ * 上传一张图片作为歌单自定义封面，返回可直接用于 `pic` 的 `custom/<FileName>`。
+ *
+ * 入参应当是 `prepareCoverImage()` 的输出（512×512 JPEG）——图床对尺寸和体积有硬限制
+ * （宽高 ≥400、单边 ≤8192、≤3MB），原图直传经常失败。这里只做兜底校验。
+ */
+export async function uploadPlaylistCover(file: File): Promise<string> {
+  const ext = COVER_MIME_EXT[file.type]
+  if (!ext) {
+    throw new ApiError('只支持 JPG / PNG / WebP / GIF 图片', { code: 'COVER_TYPE_INVALID' })
+  }
+  if (file.size > COVER_MAX_BYTES) {
+    throw new ApiError('图片过大，请选择 3MB 以内的图片', { code: 'COVER_TOO_LARGE' })
+  }
+  if (file.size === 0) {
+    throw new ApiError('图片内容为空，请重新选择', { code: 'COVER_EMPTY' })
+  }
+
+  // 上传接口的响应是扁平的 `{status, FileName}`，不是上游常见的 `{data:{...}}` 壳，
+  // 所以这里不用 KugouBody。
+  const body = await http
+    .post<{ status?: number; FileName?: string; msg?: string; error_msg?: string; error_code?: number }>(
+      '/playlist/pic/upload',
+      file,
+      {
+        params: { type: 'custom', extendName: ext, timestamp: Date.now() },
+        headers: { 'Content-Type': 'application/octet-stream' },
+        // 图片上传比普通接口慢，且上游要转发到图床，给足 30s
+        timeout: 30_000,
+      }
+    )
+    .then((response) => response.data)
+
+  const fileName = str(body?.FileName)
+  if (body?.status !== 1 || !fileName) {
+    throw new ApiError(body?.msg || body?.error_msg || '封面上传失败，请稍后重试', {
+      code: body?.error_code ?? 'COVER_UPLOAD_FAILED',
+      payload: body,
+    })
+  }
+
+  return `custom/${fileName}`
+}
+
+/**
+ * 修改「我的歌单」名称 / 简介 / 自定义封面（传 undefined 表示不改该项）。
+ *
+ * `pic` 只在传了值时才会带上：上游模块是 `if (params.pic)` 判断，
+ * 不传即保持原封面 —— 这一点和 `intro`（不传即写空）相反，容易搞混。
+ */
 export async function updatePlaylist(
   listid: string,
-  patch: { name?: string; intro?: string; totalVer?: string }
+  patch: { name?: string; intro?: string; pic?: string; totalVer?: string }
 ): Promise<void> {
   const body = await apiGet<KugouBody<Raw>>(
     '/playlist/update',
@@ -197,6 +288,7 @@ export async function updatePlaylist(
       type: 0,
       ...(patch.name !== undefined ? { name: patch.name } : {}),
       intro: patch.intro ?? '',
+      ...(patch.pic ? { pic: patch.pic } : {}),
       timestamp: Date.now(),
     },
     { timeout: 15_000 }

@@ -10,6 +10,10 @@ import type {
   DesktopLyricPayload,
   KugouBridge,
   KugouCredential,
+  SystemPreferences,
+  TrayCommand,
+  TrayState,
+  UpdateCheckResult,
   UpstreamStatus,
 } from '../src/types/kugou'
 
@@ -28,6 +32,16 @@ const bridge: KugouBridge = {
   app: {
     info: () => invoke<AppInfo>('app:info'),
     openExternal: (url: string) => invoke<boolean>('app:open-external', url),
+  },
+  system: {
+    preferences: () => invoke<SystemPreferences | null>('system:preferences'),
+    setPreferences: (patch: Partial<SystemPreferences>) =>
+      invoke<SystemPreferences>('system:set-preferences', patch),
+    onPreferences: (cb) => subscribe<SystemPreferences>('system:preferences', cb),
+    checkUpdate: () => invoke<UpdateCheckResult>('system:check-update'),
+    trayState: () => invoke<TrayState>('system:tray-state'),
+    onTrayState: (cb) => subscribe<TrayState>('system:tray-state', cb),
+    onTrayCommand: (cb) => subscribe<TrayCommand>('system:tray-command', cb),
   },
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),

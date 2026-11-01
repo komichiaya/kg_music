@@ -1,9 +1,16 @@
 // @see - https://www.electron.build/configuration/configuration
 {
   "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
-  "appId": "YourAppID",
+  // appId 决定 Windows 上 userData 目录名与 AUMID（任务栏分组、通知归属）。
+  // 必须与 electron/main.ts 的 app.setAppUserModelId() 保持一致，否则
+  // 安装版的开始菜单快捷方式与运行中的窗口会被系统当成两个应用。
+  "appId": "com.kugo.concept",
   "asar": true,
-  "productName": "YourAppName",
+  // productName 决定可执行文件名与 userData 目录名，故意用 ASCII：
+  // 中文目录在部分解压工具、日志管道与第三方杀软里仍会出现乱码或误判。
+  // 界面上显示的中文名由窗口标题、托盘 tooltip 与快捷方式名各自指定。
+  "productName": "KugouConcept",
+  "copyright": "第三方客户端 · 音乐内容版权归酷狗音乐所有",
   "directories": {
     "output": "release/${version}"
   },
@@ -20,10 +27,14 @@
       "to": "KuGouMusicApi"
     }
   ],
+  // 应用图标：build/icon.ico 是 16→256 的多尺寸 ico，Windows 会按需取帧；
+  // build/icon.png（1024×1024）供 mac / linux 使用。
   "mac": {
     "target": [
       "dmg"
     ],
+    "category": "public.app-category.music",
+    "icon": "build/icon.png",
     "artifactName": "${productName}-Mac-${version}-Installer.${ext}"
   },
   "win": {
@@ -35,18 +46,26 @@
         ]
       }
     ],
+    "icon": "build/icon.ico",
     "artifactName": "${productName}-Windows-${version}-Setup.${ext}"
   },
   "nsis": {
     "oneClick": false,
     "perMachine": false,
     "allowToChangeInstallationDirectory": true,
-    "deleteAppDataOnUninstall": false
+    // 卸载时保留 userData：里面有登录凭据、队列进度与上游设备指纹。
+    // 删掉设备指纹会让下次登录触发风控 20028（见 docs/开发文档.md §7.1）。
+    "deleteAppDataOnUninstall": false,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "酷狗音乐概念版"
   },
   "linux": {
     "target": [
       "AppImage"
     ],
+    "category": "AudioVideo;Audio;Player",
+    "icon": "build/icon.png",
     "artifactName": "${productName}-Linux-${version}.${ext}"
   }
 }

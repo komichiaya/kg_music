@@ -79,6 +79,31 @@ async function load() {
 onMounted(load)
 watch(gid, () => void load())
 
+/**
+ * 只重拉歌单信息（名称/简介/封面），不动曲目列表。
+ *
+ * 在别处（右键「编辑歌单信息」）改完封面或改名后，本页的 `detail` 还是旧的，
+ * 封面会一直显示改之前那张。走整页 `load()` 会把曲目清空再重排，
+ * 视觉上像刷新了一次页面，所以这里只补详情那一半。
+ */
+async function refreshDetail() {
+  const id = gid.value
+  if (!id || !detail.value) return
+  const token = requestToken
+  try {
+    const info = await fetchPlaylistDetail(id, auth.userId)
+    if (token !== requestToken || !info) return
+    detail.value = info
+  } catch {
+    // 静默失败：页面已有可用数据，不该因为一次后台刷新弹错误
+  }
+}
+
+watch(
+  () => library.revision,
+  () => void refreshDetail()
+)
+
 async function playAt(track: Track, queue: Track[]) {
   await player.play(track, queue)
 }

@@ -5,6 +5,9 @@
  * 路由参数即 author_id。详情 `/artist/detail`（**响应无 status 字段**，只能靠 data 判定），
  * 热门单曲 `/artist/audios`、专辑 `/artist/albums`。
  * 入口：TrackTable 的歌手名、专辑页的歌手链接。
+ *
+ * 关注态：上游没有「是否已关注」查询接口，只能靠 `/user/follow` 的整份列表比对，
+ * 因此关注列表放在 follow store 里共享，本页只读它的 `isFollowing(id)`。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -14,11 +17,15 @@ import AppIcon from '@/components/common/AppIcon.vue'
 import TrackTable from '@/components/common/TrackTable.vue'
 import { fetchArtistAlbums, fetchArtistDetail, fetchArtistSongs } from '@/api/artist'
 import { ApiError } from '@/api/request'
+import { useAuthStore } from '@/stores/auth'
+import { useFollowStore } from '@/stores/follow'
 import { usePlayerStore } from '@/stores/player'
 import type { AlbumSummary, ArtistDetail, Track } from '@/types/kugou'
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuthStore()
+const follow = useFollowStore()
 const player = usePlayerStore()
 
 const authorId = computed(() => String(route.params.id ?? ''))
@@ -28,8 +35,15 @@ const albums = ref<AlbumSummary[]>([])
 const loading = ref(false)
 const error = ref<string | null>(null)
 const tab = ref<'songs' | 'albums'>('songs')
+/** 关注按钮的即时反馈，避免请求往返期间按钮文案抖动 */
+const followError = ref<string | null>(null)
 
 let requestToken = 0
+
+const following = computed(() => Boolean(authorId.value) && follow.isFollowing(authorId.value))
+const followBusy = computed(() => follow.pending === authorId.value)
+/** 未登录时按钮仍可点，但点了先去登录页，不静默失败 */
+const followDisabled = computed(() => followBusy.value || !authorId.value)
 
 function readable(err: unknown): string {
   return err instanceof ApiError ? err.message : '歌手信息加载失败，请稍后重试'
@@ -50,6 +64,7 @@ async function load() {
   const token = ++requestToken
   loading.value = true
   error.value = null
+  followError.value = null
   detail.value = null
   tracks.value = []
   albums.value = []
@@ -72,8 +87,46 @@ async function load() {
   }
 }
 
-onMounted(load)
+/**
+ * 关注 / 取消关注。
+ *
+ * 未登录时不弹错，直接带去登录页并回跳本页——「未登录不能关注」是路由级的常识，
+ * 比在歌手页提示「请先登录」少一次操作。
+ */
+async function toggleFollow() {
+  if (!authorId.value || followBusy.value) return
+
+  if (!auth.isLoggedIn) {
+    void router.push({ name: 'login', query: { redirect: route.fullPath } })
+    return
+  }
+
+  followError.value = null
+  try {
+    await follow.toggle(authorId.value, {
+      name: detail.value?.name ?? '未知歌手',
+      avatar: detail.value?.avatar ?? null,
+    })
+  } catch (err) {
+    followError.value = err instanceof Error ? err.message : '操作失败，请稍后重试'
+  }
+}
+
+onMounted(() => {
+  void load()
+  // 关注态要等列表回来才知道，未登录时不拉（会 20010）
+  if (auth.isLoggedIn && auth.userId) void follow.load(auth.userId)
+})
+
 watch(authorId, () => void load())
+
+// 冷启动补水完成后才有 userId，补拉一次关注列表
+watch(
+  () => auth.sessionChecked,
+  (checked) => {
+    if (checked && auth.userId) void follow.load(auth.userId)
+  }
+)
 
 function openAlbum(id: string) {
   void router.push({ name: 'album', params: { id } })
@@ -128,6 +181,19 @@ async function playAll() {
             <span class="stat__label">MV</span>
           </li>
         </ul>
+        <div v-if="detail" class="head__actions">
+          <button
+            type="button"
+            class="follow-button"
+            :class="{ 'follow-button--on': following }"
+            :disabled="followDisabled"
+            @click="toggleFollow"
+          >
+            <AppIcon :name="following ? 'check' : 'heart'" :size="14" />
+            {{ followBusy ? '处理中…' : following ? '已关注' : '关注' }}
+          </button>
+          <p v-if="followError" class="head__follow-error">{{ followError }}</p>
+        </div>
       </div>
     </section>
 
@@ -271,6 +337,66 @@ async function playAll() {
 .stat__label {
   font-size: 10.5px;
   color: var(--text-3);
+}
+
+.head__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+/* 关注按钮：未关注用品牌渐变主按钮，已关注降级为描边次级按钮，
+   靠形态差异而不是颜色暗示「再点一次会取关」 */
+.follow-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 16px;
+  border-radius: 999px;
+  background: var(--brand-grad);
+  color: #06121a;
+  font-size: 12.5px;
+  font-weight: 600;
+  transition:
+    filter var(--dur-fast) var(--ease),
+    border-color var(--dur-fast) var(--ease),
+    background-color var(--dur-fast) var(--ease),
+    color var(--dur-fast) var(--ease);
+}
+
+.follow-button:hover {
+  filter: brightness(1.06);
+}
+
+.follow-button:active {
+  transform: translateY(1px);
+}
+
+.follow-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  filter: none;
+}
+
+.follow-button--on {
+  background: var(--fill-1);
+  border: 1px solid var(--stroke-strong);
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.follow-button--on:hover {
+  border-color: var(--err);
+  color: var(--err);
+  filter: none;
+}
+
+.head__follow-error {
+  font-size: 11.5px;
+  color: var(--err);
 }
 
 .tabs {

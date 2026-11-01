@@ -104,6 +104,20 @@ export interface AlbumSummary {
   publishDate: string | null
 }
 
+/**
+ * 已关注的歌手（/user/follow）
+ *
+ * 上游把歌手与用户混在同一个 `lists[]` 里，这里只收敛歌手条目：
+ * `singerid` 即 `ArtistDetail.id`，可直接跳 `/artist/:id`。
+ */
+export interface FollowedArtist {
+  id: string
+  name: string
+  avatar: string | null
+  /** 关注时间，秒级时间戳；接口未返回时为 null */
+  addTime: number | null
+}
+
 /** 听歌等级（/user/grade/info 查询模式） */
 export interface GradeInfo {
   level: number
@@ -236,11 +250,89 @@ export interface AppInfo {
   upstream: UpstreamStatus
 }
 
+/**
+ * 系统级行为偏好（Main 独占持有，落盘 `system-prefs.json`）
+ *
+ * 与渲染层 localStorage 里的 `Preferences` 分开：这两项必须由 Main 真正执行
+ * （写系统登录项 / 拦截窗口关闭），只存 localStorage 是无效的。
+ */
+export interface SystemPreferences {
+  /** 开机自启：Main 写入系统登录项 */
+  autoStart: boolean
+  /** 关闭主窗口时最小化到托盘而不是退出 */
+  closeToTray: boolean
+  /** 是否已经提示过「程序仍在托盘运行」（只提示一次，避免每次关闭都弹） */
+  trayHintShown: boolean
+}
+
+/**
+ * 托盘菜单可触发的动作
+ *
+ * `mini` / `restore` / `settings` 由 Main 转成指令发给渲染层执行：
+ * 迷你态与路由都在渲染层，Main 直接改窗口几何会让两边状态脱节。
+ */
+export type TrayCommand = 'show' | 'hide' | 'mini' | 'restore' | 'lyric' | 'settings' | 'quit'
+
+/** 托盘与窗口的联动状态，用于同步菜单勾选与渲染层提示 */
+export interface TrayState {
+  /** 托盘图标是否已创建（Linux 无托盘宿主时为 false） */
+  available: boolean
+  /** 主窗口是否可见 */
+  windowVisible: boolean
+  /** 是否处于迷你播放器模式 */
+  mini: boolean
+  /** 桌面歌词窗是否打开 */
+  lyricOpen: boolean
+}
+
+/**
+ * 检查更新的阶段
+ *
+ * `unconfigured` 是刻意区分的：没有配置更新源时不能报「已是最新」，
+ * 那会让用户以为真的检查过了。
+ */
+export type UpdatePhase =
+  | 'idle'
+  | 'checking'
+  | 'latest'
+  | 'available'
+  | 'unconfigured'
+  | 'error'
+
+export interface UpdateCheckResult {
+  phase: UpdatePhase
+  /** 当前运行版本（app.getVersion()） */
+  currentVersion: string
+  /** 更新源给出的最新版本，未取到时为 null */
+  latestVersion: string | null
+  releaseNotes: string | null
+  releaseDate: string | null
+  /** 安装包下载页（由 Main 校验协议后 openExternal） */
+  downloadUrl: string | null
+  /** 面向用户的说明文案，成功路径为 null */
+  message: string | null
+}
+
 /** preload 通过 contextBridge 暴露的全部能力（唯一入口 window.kugou） */
 export interface KugouBridge {
   app: {
     info: () => Promise<AppInfo>
     openExternal: (url: string) => Promise<boolean>
+  }
+  /** 系统级行为（开机自启、关闭到托盘）与检查更新 */
+  system: {
+    /** 读取 Main 侧的偏好；首次运行尚无落盘时返回 null（由渲染层用本地默认值回填） */
+    preferences: () => Promise<SystemPreferences | null>
+    /** 写入并立即生效（开机自启会真正调用系统登录项 API） */
+    setPreferences: (patch: Partial<SystemPreferences>) => Promise<SystemPreferences>
+    onPreferences: (cb: (prefs: SystemPreferences) => void) => () => void
+    /** 检查更新；不传则用默认更新源 */
+    checkUpdate: () => Promise<UpdateCheckResult>
+    /** 托盘状态（菜单勾选/提示用） */
+    trayState: () => Promise<TrayState>
+    onTrayState: (cb: (state: TrayState) => void) => () => void
+    /** 托盘菜单点击后回传动作，供渲染层做路由级响应 */
+    onTrayCommand: (cb: (command: TrayCommand) => void) => () => void
   }
   window: {
     minimize: () => void

@@ -7,6 +7,9 @@
  *
  * 签到链本身在 App.vue 里按「会话校验 → 等级查询 → 一天 VIP → 首播上报」自动跑，
  * 本页只展示状态，不再铺一张逐步执行明细的卡片。
+ *
+ * 「我的收藏」入口：关注的歌手与收藏的别人创建的歌单都不在个人中心展开，
+ * 只在入口卡片上给数字，点进去看 `/favorites`。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
@@ -17,6 +20,8 @@ import { useAuthStore } from '@/stores/auth'
 import { useVipStore } from '@/stores/vip'
 import { useProfileMetaStore } from '@/stores/profile'
 import { useCheckinStore } from '@/stores/checkin'
+import { useFollowStore } from '@/stores/follow'
+import { useLibraryStore } from '@/stores/library'
 import { formatDateTime } from '@/utils/format'
 
 const router = useRouter()
@@ -24,9 +29,24 @@ const auth = useAuthStore()
 const vip = useVipStore()
 const meta = useProfileMetaStore()
 const checkin = useCheckinStore()
+const follow = useFollowStore()
+const library = useLibraryStore()
 
 const refreshing = ref(false)
 const refreshError = ref<string | null>(null)
+
+/** 收藏的歌单 = 账号歌单里非本人创建的那些 */
+const favoriteCount = computed(() => library.playlists.filter((item) => !item.mine).length)
+const artistCount = computed(() => follow.artists.length)
+
+const favoritesHint = computed(() => {
+  if (!follow.loaded && !library.playlists.length) return '关注的歌手与收藏的歌单'
+  return `${artistCount.value} 位歌手 · ${favoriteCount.value} 个歌单`
+})
+
+function openFavorites() {
+  void router.push({ name: 'favorites' })
+}
 
 const levelLabel = computed(() => {
   const level = meta.level ?? auth.profile?.level
@@ -96,13 +116,23 @@ async function logout() {
 
 onMounted(() => {
   if (auth.isLoggedIn) void meta.load()
+  // 入口卡片上的数字要真实，进页就顺带把关注歌手与歌单拉起来（store 内有账号级去重）
+  if (auth.userId) {
+    void follow.load(auth.userId)
+    void library.loadPlaylists(auth.userId)
+  }
 })
 
 // 会话校验通过（冷启动补水完成）后再拉等级与会员信息
 watch(
   () => auth.sessionChecked,
   (checked) => {
-    if (checked) void meta.load()
+    if (!checked) return
+    void meta.load()
+    if (auth.userId) {
+      void follow.load(auth.userId)
+      void library.loadPlaylists(auth.userId)
+    }
   }
 )
 </script>
@@ -165,6 +195,18 @@ watch(
         <span class="stat__value">{{ stat.value }}</span>
       </article>
     </div>
+
+    <!-- 我的收藏：关注的歌手 + 收藏的别人创建的歌单，内容在独立页面展开 -->
+    <button class="entry panel panel--interactive" type="button" @click="openFavorites">
+      <span class="entry__icon">
+        <AppIcon name="heart-fill" :size="18" />
+      </span>
+      <span class="entry__body">
+        <span class="entry__title">我的收藏</span>
+        <span class="entry__hint">{{ favoritesHint }}</span>
+      </span>
+      <AppIcon name="chevron-right" :size="16" />
+    </button>
   </PageShell>
 </template>
 
@@ -286,6 +328,53 @@ watch(
 .stat__value {
   font-size: 15px;
   font-weight: 600;
+}
+
+/* 我的收藏入口：一行卡片，右侧箭头暗示可进入 */
+.entry {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  margin-top: 14px;
+  padding: 16px 20px;
+  border-radius: var(--r-md);
+  text-align: left;
+  color: var(--text-2);
+}
+
+.entry__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: rgba(44, 230, 230, 0.12);
+  color: var(--brand-1);
+}
+
+.entry__body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  flex: 1;
+}
+
+.entry__title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+.entry__hint {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 </style>

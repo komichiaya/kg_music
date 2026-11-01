@@ -3,12 +3,15 @@
  *
  * 持久化策略（文档 §6.5）：
  * - 用户偏好（音质 / 播放模式 / 主题 / 桌面歌词 / 侧栏折叠）写 localStorage；
- * - 系统级行为（开机自启、托盘）需 Main 参与，P7 接入，当前仅保留开关位。
+ * - 系统级行为（开机自启、关闭到托盘）以 **Main 为准**：它们要真的写系统登录项、
+ *   真的在 `BrowserWindow#close` 里拦截，只存 localStorage 是无效的。
+ *   localStorage 里仍保留一份副本，用于 Main 尚未应答（或运行在浏览器里调试）时
+ *   先渲染出用户上次的选择，避免开关闪一下再跳回去。
  */
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { getBridge } from '@/bridge'
-import type { PlayMode, SongQuality, ThemeMode, ThemeStyle } from '@/types/kugou'
+import type { PlayMode, SongQuality, SystemPreferences, ThemeMode, ThemeStyle } from '@/types/kugou'
 
 const STORAGE_KEY = 'kugou.concept.settings.v1'
 
@@ -17,6 +20,8 @@ interface Preferences {
   playbackMode: PlayMode
   theme: ThemeMode
   themeStyle: ThemeStyle
+  /** 播放栏液态玻璃：仅在极光风格下生效，切到极简自动回退但保留偏好 */
+  playerbarLiquid: boolean
   lyricDesktop: boolean
   /** 外文歌词是否显示译文（KRC 自带，无翻译时自动隐藏） */
   lyricTranslation: boolean
@@ -32,6 +37,7 @@ const DEFAULTS: Preferences = {
   playbackMode: 'order',
   theme: 'dark',
   themeStyle: 'aurora',
+  playerbarLiquid: false,
   lyricDesktop: false,
   lyricTranslation: true,
   lyricRomaji: true,
@@ -64,6 +70,10 @@ function loadPreferences(): Preferences {
       themeStyle: isOneOf(parsed.themeStyle, THEME_STYLE_VALUES)
         ? parsed.themeStyle
         : DEFAULTS.themeStyle,
+      playerbarLiquid:
+        typeof parsed.playerbarLiquid === 'boolean'
+          ? parsed.playerbarLiquid
+          : DEFAULTS.playerbarLiquid,
       lyricDesktop: typeof parsed.lyricDesktop === 'boolean' ? parsed.lyricDesktop : DEFAULTS.lyricDesktop,
       lyricTranslation:
         typeof parsed.lyricTranslation === 'boolean'
@@ -88,6 +98,7 @@ export const useSettingsStore = defineStore('settings', () => {
   const playbackMode = ref<PlayMode>(initial.playbackMode)
   const theme = ref<ThemeMode>(initial.theme)
   const themeStyle = ref<ThemeStyle>(initial.themeStyle)
+  const playerbarLiquid = ref(initial.playerbarLiquid)
   const lyricDesktop = ref(initial.lyricDesktop)
   const lyricTranslation = ref(initial.lyricTranslation)
   const lyricRomaji = ref(initial.lyricRomaji)
@@ -114,6 +125,12 @@ export const useSettingsStore = defineStore('settings', () => {
     root.dataset.theme = resolvedTheme.value
     // 风格与明暗正交：aurora = 极光渐变，minimal = 纯白 / 纯黑
     root.dataset.style = themeStyle.value
+    // 液态玻璃只属于极光风格：极简下不写该属性，样式自然回退，偏好本身保留
+    if (themeStyle.value === 'aurora' && playerbarLiquid.value) {
+      root.dataset.liquid = 'on'
+    } else {
+      delete root.dataset.liquid
+    }
     // Element Plus 通过 html.dark 切换暗色变量
     root.classList.toggle('dark', resolvedTheme.value === 'dark')
   }
@@ -142,6 +159,61 @@ export const useSettingsStore = defineStore('settings', () => {
     return setMini(!miniMode.value)
   }
 
+  // ---------- 系统级行为（P7：以 Main 为准） ----------
+
+  /**
+   * 从 Main 拉取系统偏好并覆盖本地值
+   *
+   * 首次运行 Main 侧尚无落盘文件时会返回默认值，与这里的 DEFAULTS 一致；
+   * 若两边不一致（例如用户直接改了 system-prefs.json），以 Main 为准。
+   */
+  async function syncSystemPreferences() {
+    const bridge = getBridge()
+    if (!bridge?.system) return
+    try {
+      const remote: SystemPreferences | null = await bridge.system.preferences()
+      if (!remote) return
+      closeToTray.value = remote.closeToTray
+      autoStart.value = remote.autoStart
+    } catch (error) {
+      console.warn('[settings] 读取系统偏好失败', error)
+    }
+  }
+
+  /**
+   * 写系统偏好
+   *
+   * 不做乐观更新：开机自启要真的写系统登录项，可能失败（策略限制、无权限）。
+   * 等 Main 回传真实结果再落值，失败时把开关恢复原状并抛出，由调用方提示。
+   */
+  async function setSystemPreference(patch: Partial<SystemPreferences>) {
+    const bridge = getBridge()
+    if (!bridge?.system) throw new Error('当前环境不支持系统级设置')
+    const next = await bridge.system.setPreferences(patch)
+    closeToTray.value = next.closeToTray
+    autoStart.value = next.autoStart
+    return next
+  }
+
+  async function setCloseToTray(enabled: boolean) {
+    return setSystemPreference({ closeToTray: enabled })
+  }
+
+  async function setAutoStart(enabled: boolean) {
+    return setSystemPreference({ autoStart: enabled })
+  }
+
+  /** 托盘菜单也能改开机自启，因此偏好变化必须以 Main 的广播为准 */
+  function bindSystemBridge() {
+    const bridge = getBridge()
+    if (!bridge?.system) return () => {}
+    void syncSystemPreferences()
+    return bridge.system.onPreferences((remote) => {
+      closeToTray.value = remote.closeToTray
+      autoStart.value = remote.autoStart
+    })
+  }
+
   // 跟随系统时监听 prefers-color-scheme 变化（只注册一次）
   if (typeof window !== 'undefined') {
     const media = window.matchMedia('(prefers-color-scheme: dark)')
@@ -151,7 +223,7 @@ export const useSettingsStore = defineStore('settings', () => {
     })
   }
 
-  watch([resolvedTheme, themeStyle], applyTheme)
+  watch([resolvedTheme, themeStyle, playerbarLiquid], applyTheme)
 
   watch(
     [
@@ -159,6 +231,7 @@ export const useSettingsStore = defineStore('settings', () => {
       playbackMode,
       theme,
       themeStyle,
+      playerbarLiquid,
       lyricDesktop,
       lyricTranslation,
       lyricRomaji,
@@ -172,6 +245,7 @@ export const useSettingsStore = defineStore('settings', () => {
         playbackMode: playbackMode.value,
         theme: theme.value,
         themeStyle: themeStyle.value,
+        playerbarLiquid: playerbarLiquid.value,
         lyricDesktop: lyricDesktop.value,
         lyricTranslation: lyricTranslation.value,
         lyricRomaji: lyricRomaji.value,
@@ -192,6 +266,7 @@ export const useSettingsStore = defineStore('settings', () => {
     playbackMode,
     theme,
     themeStyle,
+    playerbarLiquid,
     lyricDesktop,
     lyricTranslation,
     lyricRomaji,
@@ -204,5 +279,10 @@ export const useSettingsStore = defineStore('settings', () => {
     toggleSidebar,
     setMini,
     toggleMini,
+    syncSystemPreferences,
+    setSystemPreference,
+    setCloseToTray,
+    setAutoStart,
+    bindSystemBridge,
   }
 })

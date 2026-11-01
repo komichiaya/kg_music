@@ -46,13 +46,38 @@ const modeIcon = computed(() => {
 })
 
 const menu = useContextMenuStore()
-const { navItems } = useTrackActions()
+const { navItems, openArtist, artistsOf } = useTrackActions()
 
 /** 播放栏当前曲目右键：跳转歌手 / 专辑 */
 function openNowMenu(event: MouseEvent) {
   const track = player.current
   if (!track) return
   menu.open(event, navItems(track))
+}
+
+/**
+ * 歌手名能否点击：至少要有一位带 id 的歌手可跳转。
+ * 与右键菜单同一判定（`useTrackActions.artistsOf`），避免两处规则分叉。
+ */
+const canOpenArtist = computed(() => {
+  const track = player.current
+  return track ? artistsOf(track).length > 0 : false
+})
+
+const artistLinkTitle = computed(() => {
+  const track = player.current
+  if (!track) return undefined
+  return artistsOf(track).length > 1 ? '有多位歌手，点击选择要跳转的歌手' : '查看歌手详情'
+})
+
+/**
+ * 点击歌手名：唯一歌手直接进详情页，多歌手弹「选择歌手」框，
+ * 单/多的分流逻辑收在 openArtist 里，这里只负责转发当前曲目。
+ */
+function openCurrentArtist() {
+  const track = player.current
+  if (!track) return
+  openArtist(track)
 }
 
 const qualityOptions = (Object.keys(QUALITY_LABEL) as SongQuality[]).map((value) => ({
@@ -132,7 +157,16 @@ async function chooseQuality(value: SongQuality) {
           <p class="now__title">{{ player.current?.name ?? '尚未开始播放' }}</p>
           <p class="now__sub">
             <template v-if="player.current">
-              <span class="now__singer">{{ player.current.singer }}</span>
+              <button
+                v-if="canOpenArtist"
+                class="now__singer now__singer--link"
+                type="button"
+                :title="artistLinkTitle"
+                @click="openCurrentArtist"
+              >
+                {{ player.current.singer }}
+              </button>
+              <span v-else class="now__singer">{{ player.current.singer }}</span>
               <span v-if="player.previewMode" class="now__tag now__tag--warn">
                 试听 {{ player.previewSeconds }} 秒
               </span>
@@ -307,6 +341,146 @@ async function chooseQuality(value: SongQuality) {
   box-shadow: var(--shadow-2);
 }
 
+/* ---------- 液态玻璃（设置 → 外观 → 播放栏液态玻璃） ---------- */
+
+/*
+ * 开关落在 <html data-liquid="on">：settings store 只在「极光风格 + 开关打开」时写这个属性，
+ * 极简风格下属性不存在，这里不必再判断 data-style。
+ *
+ * 质感全部由「多层背景渐变 + 内缘 inset 高光」表达：玻璃厚度、斜向光泽、
+ * 青/蓝折射色，都是静态绘制，没有任何额外图层与动画。
+ *
+ * **这一层里禁止出现无限循环动画、更厚的 backdrop-filter、brightness()**
+ * （曾踩过的坑）：`.playerbar__inner` 带 backdrop-filter，它内部任何持续动画
+ * 都会让 Chromium 每帧重算一次大面积背景模糊；再叠加 `background-position`
+ * 这种走主线程重绘的动画，合成线程被饿死。更厚的 blur 或 `brightness()`
+ * 还会把 Windows 上的 backdrop-filter 推进软件回退路径。两者的表现都是
+ * **整窗鼠标失效**——光标不再变成手型、点击无响应，而键盘（由主进程直接派发，
+ * 不经过命中测试）仍可用。玻璃质感靠静态光影表达，不靠动。
+ *
+ * 也因此这里不用 ::before 叠层：负 z-index + isolation 会在模糊层里再开一个
+ * 合成上下文，斜向光泽直接并进背景渐变更省一次绘制。
+ *
+ * **:global() 必须把整条选择器括进去**（曾踩过的坑）：写成
+ * `:global(html[data-liquid='on']) .playerbar__inner` 时，scoped 编译器会把
+ * 括号之后的后代部分整个丢掉，产出 `html[data-liquid='on'] { … }`——样式全落在
+ * <html> 上，播放栏一点没变，开关拨了也看不出区别。正确写法是
+ * `:global(html[data-liquid='on'] .playerbar__inner)`。
+ *
+ * 不用 overflow: hidden，否则会把 .quality 向上弹出的音质菜单裁掉。
+ */
+:global(html[data-liquid='on'] .playerbar__inner) {
+  border-color: rgba(255, 255, 255, 0.22);
+  background:
+    /* 斜向光泽：原 ::before 的那道光，并进背景层省一次绘制 */
+    linear-gradient(
+      115deg,
+      transparent 18%,
+      rgba(255, 255, 255, 0.26) 40%,
+      rgba(255, 255, 255, 0.1) 50%,
+      rgba(255, 255, 255, 0.02) 58%,
+      transparent 74%
+    ),
+    /* 反向弱光泽：让玻璃不是「一道光」而是「一块料」 */
+    linear-gradient(
+      62deg,
+      rgba(255, 255, 255, 0.07),
+      transparent 34%,
+      transparent 72%,
+      rgba(255, 255, 255, 0.05)
+    ),
+    /* 顶部玻璃厚度 */
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.2),
+      rgba(255, 255, 255, 0.04) 40%,
+      rgba(255, 255, 255, 0) 64%
+    ),
+    /* 折射色：青 / 蓝各一团，比之前更浓一档 */
+    radial-gradient(120% 150% at 10% -24%, rgba(44, 230, 230, 0.34), transparent 56%),
+    radial-gradient(96% 130% at 90% -12%, rgba(45, 127, 249, 0.32), transparent 58%),
+    radial-gradient(80% 120% at 52% 130%, rgba(124, 92, 255, 0.18), transparent 62%),
+    /* bloom：白芯 → 冰蓝 → 透明，四段软停靠（取自 shuding/liquid-glass 的
+       bloom 配方）。不用子层 + filter: blur()——那会在模糊层里再开一个合成
+       上下文，正是下面注释里禁止的构造；渐变本身自带柔和过渡，视觉等价。 */
+    radial-gradient(
+      46% 132% at 16% -18%,
+      rgba(255, 255, 255, 0.46),
+      rgba(186, 244, 255, 0.2) 36%,
+      rgba(108, 224, 255, 0.05) 64%,
+      rgba(108, 224, 255, 0) 100%
+    ),
+    radial-gradient(
+      38% 112% at 84% -14%,
+      rgba(214, 247, 255, 0.28),
+      rgba(110, 221, 255, 0.12) 46%,
+      rgba(110, 221, 255, 0) 100%
+    ),
+    var(--glass-strong);
+  /* 与普通磨砂同档 blur：差异只留在渐变与内缘高光上，不加大模糊开销。
+     saturate 略高一点不会触发软件回退，只有大半径 blur 才会。 */
+  backdrop-filter: blur(28px) saturate(165%);
+  -webkit-backdrop-filter: blur(28px) saturate(165%);
+  /* 内缘：上亮下暗 + 一圈内发光，模拟玻璃的厚度与弧面反射 */
+  /* 外缘：rim 的双层 drop-shadow 换成 box-shadow——圆角矩形下两者等价，
+     但 box-shadow 不创建图层、不参与命中测试。这是「玻璃边缘发亮」的来源。 */
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.46),
+    inset 0 2px 1px rgba(255, 255, 255, 0.12),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -14px 24px -18px rgba(255, 255, 255, 0.22),
+    inset 0 0 48px rgba(255, 255, 255, 0.09),
+    0 0 6px rgba(170, 240, 255, 0.28),
+    0 0 18px rgba(122, 225, 255, 0.16),
+    var(--shadow-2);
+}
+
+/* 亮色下白玻璃需要更实的高光、更淡的内阴影，否则玻璃厚度看不出来 */
+:global(html[data-liquid='on'][data-theme='light'] .playerbar__inner) {
+  border-color: rgba(255, 255, 255, 0.8);
+  background:
+    linear-gradient(
+      115deg,
+      transparent 20%,
+      rgba(15, 180, 196, 0.26) 42%,
+      rgba(45, 127, 249, 0.14) 52%,
+      transparent 72%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.94),
+      rgba(255, 255, 255, 0.6) 44%,
+      rgba(255, 255, 255, 0.42) 100%
+    ),
+    radial-gradient(120% 140% at 12% -20%, rgba(15, 180, 196, 0.22), transparent 58%),
+    radial-gradient(90% 120% at 88% -10%, rgba(45, 127, 249, 0.2), transparent 60%),
+    /* bloom 亮色版：白底上不能再加白，改用品牌青的浅色晕 */
+    radial-gradient(
+      46% 132% at 16% -18%,
+      rgba(255, 255, 255, 0.9),
+      rgba(186, 240, 250, 0.42) 36%,
+      rgba(15, 180, 196, 0.08) 64%,
+      rgba(15, 180, 196, 0) 100%
+    ),
+    radial-gradient(
+      38% 112% at 84% -14%,
+      rgba(255, 255, 255, 0.7),
+      rgba(45, 127, 249, 0.1) 46%,
+      rgba(45, 127, 249, 0) 100%
+    ),
+    var(--glass-strong);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 1),
+    inset 0 2px 1px rgba(255, 255, 255, 0.7),
+    inset 0 -1px 0 rgba(15, 23, 42, 0.08),
+    inset 0 -16px 26px -20px rgba(15, 23, 42, 0.14),
+    inset 0 0 48px rgba(255, 255, 255, 0.5),
+    /* 亮色下外缘发光要压到很淡，否则白底上会糊成一圈脏边 */
+    0 0 6px rgba(15, 180, 196, 0.16),
+    0 0 18px rgba(45, 127, 249, 0.1),
+    var(--shadow-2);
+}
+
 /* ---------- 错误条 ---------- */
 
 .error-strip {
@@ -429,6 +603,23 @@ async function chooseQuality(value: SongQuality) {
   text-overflow: ellipsis;
 }
 
+/* 歌手名可点击：继承 .now__singer 的省略号截断，只补交互态样式 */
+.now__singer--link {
+  min-width: 0;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  text-align: left;
+  transition: color var(--dur-fast) var(--ease);
+}
+
+.now__singer--link:hover {
+  color: var(--brand-1);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
 .now__tag {
   flex: none;
   padding: 1px 6px;
@@ -449,7 +640,10 @@ async function chooseQuality(value: SongQuality) {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 6px;
+  gap: 3px;
+  /* 上下边距：内容高 59px（控件 38 + 间隙 3 + 进度行 18）+ 上下 margin 4px = 67px，
+     配合 --playerbar-h: 96px（栏内 82px）居中余 15px，视觉上上下各约 11px */
+  margin: 4px 0;
 }
 
 .center__controls {

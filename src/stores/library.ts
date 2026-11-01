@@ -27,6 +27,13 @@ export const useLibraryStore = defineStore('library', () => {
   const playlistError = ref<string | null>(null)
   const historyError = ref<string | null>(null)
 
+  /**
+   * 歌单信息被编辑（名称/简介/封面）后递增。
+   * 详情页 `Playlist.vue` 自己持有一份 `detail`，不会跟着列表刷新而更新，
+   * 所以需要一个显式信号让它重新拉详情 —— 否则改完封面回到详情页看到的还是旧封面。
+   */
+  const revision = ref(0)
+
   const loaded = computed(() => playlists.value.length > 0 || history.value.length > 0)
 
   let loadedUser = ''
@@ -96,15 +103,17 @@ export const useLibraryStore = defineStore('library', () => {
   }
 
   /**
-   * 保存歌单信息（名称 / 简介）。
+   * 保存歌单信息（名称 / 简介 / 封面）。
    *
    * 上游没有局部更新：一次提交会带上 name 与 intro 的全量，所以这里也要求两者一起传。
-   * 改完强制刷新列表 —— 歌单名同时出现在侧栏与详情页，局部改容易和线上不一致。
+   * 封面相反 —— `pic` 不传即保持原值，所以只在用户真的换了图时才带。
+   * 改完强制刷新列表，并递增 `revision` 通知详情页重拉
+   * （歌单名与封面同时出现在侧栏与详情页，两处都要跟上线上）。
    */
   async function updatePlaylistInfo(
     userid: string,
     playlist: PlaylistSummary,
-    patch: { name: string; intro: string }
+    patch: { name: string; intro: string; pic?: string }
   ): Promise<void> {
     if (!playlist.listid) {
       throw new ApiError('该歌单不支持编辑（缺少 listid）', { code: 'PLAYLIST_NOT_EDITABLE' })
@@ -112,9 +121,11 @@ export const useLibraryStore = defineStore('library', () => {
     await updatePlaylistRequest(playlist.listid, {
       name: patch.name,
       intro: patch.intro,
+      pic: patch.pic,
       totalVer: playlist.totalVer,
     })
     await loadPlaylists(userid, true)
+    revision.value += 1
   }
 
   /**
@@ -156,6 +167,7 @@ export const useLibraryStore = defineStore('library', () => {
     playlistError,
     historyError,
     loaded,
+    revision,
     loadPlaylists,
     loadHistory,
     createPlaylist,

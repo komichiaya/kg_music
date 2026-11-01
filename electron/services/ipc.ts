@@ -7,11 +7,21 @@
  * - 每个 handler 都校验来源窗口，非本应用窗口一律拒绝。
  */
 import { app, BrowserWindow, ipcMain, shell, type WebContents } from 'electron'
-import type { AppInfo, KugouCredential, UpstreamStatus } from '../../src/types/kugou'
+import type {
+  AppInfo,
+  KugouCredential,
+  SystemPreferences,
+  TrayState,
+  UpdateCheckResult,
+  UpstreamStatus,
+} from '../../src/types/kugou'
 import { clearCredential, readCredential, writeCredential } from './store'
 import { upstream } from './upstream'
 import { closeLyricWindow, openLyricWindow, pushLyricData, toggleLyricWindow } from './lyricWindow'
 import { isMiniWindow, setMiniWindow } from './windowMode'
+import { systemPrefs } from './systemPrefs'
+import { refreshTray, trayState } from './tray'
+import { checkForUpdate } from './updater'
 
 /** 统一从事件来源反查窗口；来源不可信时返回 null，由调用方短路 */
 function windowOf(source: { sender: WebContents }): BrowserWindow | null {
@@ -110,6 +120,26 @@ export function registerIpcHandlers() {
   ipcMain.on('lyric-window:sync', (_event, payload: unknown) => {
     pushLyricData(payload)
   })
+
+  // ---------- 系统级行为与检查更新（P7） ----------
+
+  ipcMain.handle('system:preferences', (): Promise<SystemPreferences> => systemPrefs.load())
+
+  ipcMain.handle(
+    'system:set-preferences',
+    async (_event, patch: unknown): Promise<SystemPreferences> => {
+      // 只接受对象：把 null/数组/字符串当补丁会让 normalize 悄悄落成默认值
+      const safe = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {}
+      const next = await systemPrefs.patch(safe as Partial<SystemPreferences>)
+      // autoStart 变化会影响托盘菜单勾选
+      refreshTray()
+      return next
+    },
+  )
+
+  ipcMain.handle('system:tray-state', (): TrayState => trayState())
+
+  ipcMain.handle('system:check-update', (): Promise<UpdateCheckResult> => checkForUpdate())
 }
 
 /** 向所有窗口广播上游状态变化 */
@@ -117,6 +147,20 @@ export function bindUpstreamBroadcast() {
   upstream.on('status', (status: UpstreamStatus) => {
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send('upstream:status', status)
+    }
+  })
+}
+
+/**
+ * 广播系统级偏好变化
+ *
+ * 托盘菜单也能改「开机自启」，那条路径不经过渲染层的 setPreferences，
+ * 所以偏好必须以 Main 为源头单向广播，否则设置页开关会和系统真实状态不一致。
+ */
+export function bindSystemBroadcast() {
+  systemPrefs.on('change', (prefs: SystemPreferences) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (!win.isDestroyed()) win.webContents.send('system:preferences', prefs)
     }
   })
 }

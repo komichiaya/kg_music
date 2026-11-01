@@ -22,6 +22,7 @@ import { fetchUserProfile } from '@/api/user'
 import { useVipStore } from '@/stores/vip'
 import { useLibraryStore } from '@/stores/library'
 import { useProfileMetaStore } from '@/stores/profile'
+import { useFollowStore } from '@/stores/follow'
 import type { KugouCredential, LoginChannel, UserProfile } from '@/types/kugou'
 
 /**
@@ -198,6 +199,7 @@ export const useAuthStore = defineStore('auth', () => {
     // 账号相关内存态必须清空，避免下一个账号读到上一次的结果
     useLibraryStore().reset()
     useProfileMetaStore().reset()
+    useFollowStore().reset()
     try {
       await getBridge()?.credential.clear()
     } catch (error) {

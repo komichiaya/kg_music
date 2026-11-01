@@ -1,18 +1,29 @@
 <script setup lang="ts">
 /**
- * 设置页（P0 骨架）
+ * 设置页
  *
- * 已可用：音质 / 播放模式 / 主题 / 桌面歌词开关（本地持久化）、上游状态查看与重启。
- * 系统级项（开机自启、关闭到托盘、全局快捷键）需 Main 介入，P7 打通。
+ * 分两类：
+ * - 播放 / 外观：纯渲染层偏好，写 localStorage，即时生效；
+ * - 窗口与系统 / 检查更新：需要 Main 真正执行（写系统登录项、拦截窗口关闭、
+ *   联网拉清单），一律「先请求 Main、拿到结果再落值」，不做乐观更新——
+ *   开机自启可能因系统策略失败，乐观改开关会让界面撒谎。
  */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import PageShell from '@/components/common/PageShell.vue'
 import AppIcon from '@/components/common/AppIcon.vue'
 import { getBridge } from '@/bridge'
 import { useUpstream } from '@/composables/useUpstream'
 import { useSettingsStore } from '@/stores/settings'
 import { QUALITY_LABEL, PLAY_MODE_LABEL } from '@/stores/player'
-import type { AppInfo, PlayMode, SongQuality, ThemeMode, ThemeStyle } from '@/types/kugou'
+import type {
+  AppInfo,
+  PlayMode,
+  SongQuality,
+  ThemeMode,
+  ThemeStyle,
+  TrayState,
+  UpdateCheckResult,
+} from '@/types/kugou'
 
 const settings = useSettingsStore()
 const {
@@ -55,11 +66,100 @@ const styleOptions: Array<{ value: ThemeStyle; label: string }> = [
   { value: 'minimal', label: '极简' },
 ]
 
-onMounted(async () => {
+// ---------------- 系统级开关 ----------------
+
+const tray = ref<TrayState | null>(null)
+/** 开关请求进行中：避免连点导致两次写系统登录项交错 */
+const systemBusy = ref(false)
+const systemError = ref<string | null>(null)
+
+/** 托盘不可用时「关闭到托盘」实际不生效，必须提前说明而不是让用户以为开了 */
+const trayUnavailable = computed(() => tray.value !== null && !tray.value.available)
+
+async function applySystemToggle(patch: { closeToTray?: boolean; autoStart?: boolean }) {
+  if (systemBusy.value) return
+  systemBusy.value = true
+  systemError.value = null
   try {
-    info.value = (await getBridge()?.app.info()) ?? null
+    await settings.setSystemPreference(patch)
+  } catch (error) {
+    systemError.value = error instanceof Error ? error.message : '系统设置写入失败'
+  } finally {
+    systemBusy.value = false
+  }
+}
+
+/** el-switch 用 :model-value + @change，切的是「已生效的值」，不是本地 ref */
+function onCloseToTrayChange(next: boolean | string | number) {
+  void applySystemToggle({ closeToTray: next === true })
+}
+
+function onAutoStartChange(next: boolean | string | number) {
+  void applySystemToggle({ autoStart: next === true })
+}
+
+// ---------------- 检查更新 ----------------
+
+const updateResult = ref<UpdateCheckResult | null>(null)
+const checking = ref(false)
+
+const updateLabel = computed(() => {
+  if (checking.value) return '检查中…'
+  return '检查更新'
+})
+
+const updateMessage = computed(() => {
+  const result = updateResult.value
+  if (!result) return null
+  if (result.message) return result.message
+  if (result.phase === 'latest') return `已是最新版本（${result.currentVersion}）`
+  if (result.phase === 'available') {
+    return `发现新版本 ${result.latestVersion}，当前 ${result.currentVersion}`
+  }
+  return null
+})
+
+/** 有下载页才给按钮，避免点开一个空链接 */
+const updateDownloadUrl = computed(() => updateResult.value?.downloadUrl ?? null)
+
+async function checkUpdate() {
+  const bridge = getBridge()
+  if (!bridge?.system || checking.value) return
+  checking.value = true
+  try {
+    updateResult.value = await bridge.system.checkUpdate()
+  } catch (error) {
+    updateResult.value = {
+      phase: 'error',
+      currentVersion: info.value?.version ?? '—',
+      latestVersion: null,
+      releaseNotes: null,
+      releaseDate: null,
+      downloadUrl: null,
+      message: error instanceof Error ? error.message : '检查更新失败',
+    }
+  } finally {
+    checking.value = false
+  }
+}
+
+async function openDownload() {
+  const url = updateDownloadUrl.value
+  if (!url) return
+  await getBridge()?.app.openExternal(url)
+}
+
+onMounted(async () => {
+  const bridge = getBridge()
+  try {
+    info.value = (await bridge?.app.info()) ?? null
   } catch (error) {
     console.warn('[settings] 获取应用信息失败', error)
+  }
+  try {
+    tray.value = (await bridge?.system?.trayState()) ?? null
+  } catch (error) {
+    console.warn('[settings] 获取托盘状态失败', error)
   }
 })
 </script>
@@ -147,6 +247,17 @@ onMounted(async () => {
             </button>
           </div>
         </div>
+
+        <!-- 液态玻璃只对极光渐变的背景有意义：极简是纯色底，折射/高光无处可折 -->
+        <div v-if="settings.themeStyle === 'aurora'" class="row">
+          <div class="row__copy">
+            <p class="row__label">播放栏液态玻璃</p>
+            <p class="row__desc">
+              播放栏改用液态玻璃：更强的折射高光、内缘光与缓慢流动的光泽；关闭则回到普通磨砂。
+            </p>
+          </div>
+          <el-switch v-model="settings.playerbarLiquid" />
+        </div>
       </section>
 
       <!-- 窗口 -->
@@ -159,9 +270,38 @@ onMounted(async () => {
         <div class="row">
           <div class="row__copy">
             <p class="row__label">关闭时最小化到托盘</p>
-            <p class="row__desc">关闭窗口时保留播放，避免误关退出。</p>
+            <p class="row__desc">
+              {{
+                trayUnavailable
+                  ? '当前系统未能创建托盘图标，关闭窗口将直接退出。'
+                  : '关闭窗口时保留播放，避免误关退出；退出请用托盘菜单。'
+              }}
+            </p>
+            <p v-if="systemError" class="row__error">{{ systemError }}</p>
           </div>
-          <el-switch v-model="settings.closeToTray" />
+          <el-switch
+            :model-value="settings.closeToTray"
+            :disabled="systemBusy"
+            @change="onCloseToTrayChange"
+          />
+        </div>
+
+        <div class="row">
+          <div class="row__copy">
+            <p class="row__label">开机自启</p>
+            <p class="row__desc">
+              {{
+                info?.isPackaged
+                  ? '登录系统后自动启动，最小化到托盘，不打断当前工作。'
+                  : '开发模式下只保存偏好，不会写入系统登录项；安装包中生效。'
+              }}
+            </p>
+          </div>
+          <el-switch
+            :model-value="settings.autoStart"
+            :disabled="systemBusy"
+            @change="onAutoStartChange"
+          />
         </div>
 
         <div class="row">
@@ -277,6 +417,31 @@ onMounted(async () => {
           </div>
         </dl>
 
+        <div class="row">
+          <div class="row__copy">
+            <p class="row__label">检查更新</p>
+            <p v-if="updateMessage" class="row__desc">{{ updateMessage }}</p>
+            <p v-else class="row__desc">对比更新清单里的版本号，不自动下载安装。</p>
+            <p v-if="updateResult?.releaseNotes" class="row__notes">
+              {{ updateResult.releaseNotes }}
+            </p>
+          </div>
+          <div class="row__actions">
+            <button
+              v-if="updateDownloadUrl"
+              class="ghost-button"
+              type="button"
+              @click="openDownload"
+            >
+              前往下载
+            </button>
+            <button class="ghost-button" type="button" :disabled="checking" @click="checkUpdate">
+              <AppIcon name="refresh" :size="14" />
+              {{ updateLabel }}
+            </button>
+          </div>
+        </div>
+
         <p class="about__note">
           本项目为第三方客户端，音乐内容与版权归酷狗音乐所有。账号凭据仅保存在本机。
         </p>
@@ -291,6 +456,9 @@ onMounted(async () => {
   flex-direction: column;
   gap: 14px;
   max-width: 860px;
+  /* 侧栏收起后 .app__stage 变宽，内容列若不居中，860px 之外的余量会全部堆在右侧，
+     页面看起来整体偏左。居中只作用于内容列，标题区仍按 --stage-pad 贴左。 */
+  margin: 0 auto;
 }
 
 .card {
@@ -359,6 +527,25 @@ onMounted(async () => {
   margin-top: 6px;
   font-size: 11.5px;
   color: var(--err);
+}
+
+/* 更新说明可能较长，限制行数避免把「关于」卡片撑高 */
+.row__notes {
+  margin-top: 6px;
+  font-size: 11.5px;
+  line-height: 1.7;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.row__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
 }
 
 .control--select {

@@ -42,21 +42,31 @@ export function useTrackActions() {
     return single ? [{ id: single, name: track.singer }] : []
   }
 
+  /**
+   * 跳转到曲目对应的歌手页。
+   *
+   * 右键菜单的「跳转到歌手」与播放栏的歌手名点击共用这一条规则：
+   * 唯一歌手直接跳；多歌手不猜用户想去哪一位，弹框让用户选；
+   * 没有可跳转歌手（缺 id）时什么都不做，调用方应据此禁用入口。
+   */
+  function openArtist(track: Track) {
+    const artists = artistsOf(track)
+    if (artists.length === 1) {
+      goArtist(artists[0].id)
+    } else if (artists.length > 1) {
+      artistPicker.open(artists, track.name)
+    }
+  }
+
   /** 右键菜单里的「跳转到歌手 / 跳转到专辑」两项（没有可跳转目标时不生成） */
   function navItems(track: Track): ContextMenuItem[] {
     const items: ContextMenuItem[] = []
     const artists = artistsOf(track)
 
     if (artists.length === 1) {
-      items.push({ key: 'artist', label: '跳转到歌手', icon: 'user', action: () => goArtist(artists[0].id) })
+      items.push({ key: 'artist', label: '跳转到歌手', icon: 'user', action: () => openArtist(track) })
     } else if (artists.length > 1) {
-      // 多歌手：不猜用户想去哪一位，弹框让用户选
-      items.push({
-        key: 'artist',
-        label: '跳转到歌手…',
-        icon: 'user',
-        action: () => artistPicker.open(artists, track.name),
-      })
+      items.push({ key: 'artist', label: '跳转到歌手…', icon: 'user', action: () => openArtist(track) })
     }
 
     if (linkId(track.albumId)) {
@@ -66,5 +76,5 @@ export function useTrackActions() {
     return items
   }
 
-  return { goArtist, goAlbum, artistsOf, navItems }
+  return { goArtist, goAlbum, artistsOf, openArtist, navItems }
 }

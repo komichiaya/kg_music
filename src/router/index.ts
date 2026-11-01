@@ -86,6 +86,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '个人中心', requiresAuth: true },
   },
   {
+    path: '/favorites',
+    name: 'favorites',
+    component: () => import('@/views/Favorites.vue'),
+    meta: { title: '我的收藏', requiresAuth: true },
+  },
+  {
     path: '/settings',
     name: 'settings',
     component: () => import('@/views/Settings.vue'),
@@ -100,6 +106,11 @@ const routes: RouteRecordRaw[] = [
 const router = createRouter({
   history: createWebHashHistory(),
   routes,
+  /**
+   * 注意：这个 scrollBehavior 实际上不会生效 —— 本应用 window 不滚（`body{overflow:hidden}`），
+   * 真正滚动的是 `App.vue` 里的 `.app__stage`。页面滚动位置由 `App.vue` 监听 `route.fullPath` 归零，
+   * 保留这里只是为了让「假设将来改成 window 滚动」时行为一致。
+   */
   scrollBehavior: () => ({ top: 0 }),
 })
 

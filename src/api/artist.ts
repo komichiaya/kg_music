@@ -4,13 +4,17 @@
  * - `/artist/detail?id=`   歌手详情；**该接口响应没有 status 字段**，只能靠 data 判定成功
  * - `/artist/audios?id=`   热门单曲，响应 `{ total, data: [...] }`，字段与搜索不同构
  * - `/artist/albums?id=`   歌手专辑，响应 `{ total, data: [...] }`
+ * - `/artist/follow|unfollow`（POST，需登录）关注 / 取消关注歌手
+ * - `/user/follow`（POST，需登录）已关注的歌手列表，`data.lists[]`
  *
  * 约定同其他内容接口：上游 apicache 缓存 2 分钟，**所有 GET 必须带 timestamp**。
+ * 关注列表虽然是 POST，但缓存键只按 `hostname + originalUrl` 算，POST 同样会被缓存，
+ * 所以关注 / 取关之后立刻重拉也必须带 timestamp，否则读到的还是关注前的旧列表。
  */
-import { apiGet, ApiError } from './request'
+import { apiGet, apiPost, ApiError } from './request'
 import { normalizeTracks } from './track'
 import type { KugouBody } from './login'
-import type { AlbumSummary, ArtistDetail, Track } from '@/types/kugou'
+import type { AlbumSummary, ArtistDetail, FollowedArtist, Track } from '@/types/kugou'
 
 type Raw = Record<string, unknown>
 
@@ -89,6 +93,87 @@ export async function fetchArtistSongs(
   const tracks = normalizeTracks(list).map((track) => ({ ...track, artistId: track.artistId ?? id }))
 
   return { tracks, total: num((body as unknown as Raw)?.total) ?? tracks.length }
+}
+
+/* ============================================================
+ * 关注歌手
+ *
+ * 上游 `/artist/follow` 与 `/artist/unfollow` 都要求登录（无 token 返回 20010）。
+ * 返回体很薄：`{ data: { msg: '关注成功' } }` 或 `{ data: { rank, followtime } }`，
+ * 没有「是否已关注」字段，也没有关注态查询接口——所以「已关注」只能靠
+ * `/user/follow` 的列表在客户端比对 singerid。
+ *
+ * `/user/follow` 的 `data.lists[]` 里同时混了歌手与用户：
+ * 歌手的 `singerid` 有值且 `userid` 恒为 0（`iden_type` 1/4 都出现过），
+ * 这里只保留带 singerid 的条目，用 iden_type 交给视图层区分。
+ * ============================================================ */
+
+function rawList(body: KugouBody<Raw> | null | undefined): Raw[] {
+  const data = body?.data
+  if (!data || typeof data !== 'object') return []
+  const lists = (data as Raw).lists
+  return Array.isArray(lists) ? (lists as Raw[]) : []
+}
+
+/** 关注歌手；重复关注上游不报错，只是把 rank/followtime 更新一遍 */
+export async function followArtist(id: string): Promise<void> {
+  const body = await apiPost<KugouBody<Raw>>(
+    '/artist/follow',
+    { id, timestamp: Date.now() },
+    { params: { timestamp: Date.now() }, timeout: 15_000 }
+  )
+
+  if (body?.status !== 1) {
+    throw new ApiError(body?.error || body?.msg || '关注失败，请稍后重试', {
+      code: body?.error_code ?? 'FOLLOW_FAILED',
+      payload: body,
+    })
+  }
+}
+
+/** 取消关注歌手；未关注时上游同样回 status:1「操作成功」，属于幂等成功 */
+export async function unfollowArtist(id: string): Promise<void> {
+  const body = await apiPost<KugouBody<Raw>>(
+    '/artist/unfollow',
+    { id, timestamp: Date.now() },
+    { params: { timestamp: Date.now() }, timeout: 15_000 }
+  )
+
+  if (body?.status !== 1) {
+    throw new ApiError(body?.error || body?.msg || '取消关注失败，请稍后重试', {
+      code: body?.error_code ?? 'UNFOLLOW_FAILED',
+      payload: body,
+    })
+  }
+}
+
+/** 已关注的歌手列表（需登录） */
+export async function fetchFollowedArtists(): Promise<FollowedArtist[]> {
+  const body = await apiPost<KugouBody<Raw>>(
+    '/user/follow',
+    { timestamp: Date.now() },
+    { params: { timestamp: Date.now() }, timeout: 15_000 }
+  )
+
+  if (body?.status !== 1) {
+    throw new ApiError(body?.error || body?.msg || '关注列表获取失败', {
+      code: body?.error_code ?? 'FOLLOW_LIST_FAILED',
+      payload: body,
+    })
+  }
+
+  return rawList(body)
+    .map((item): FollowedArtist | null => {
+      const id = str(item.singerid)
+      if (!id || id === '0') return null
+      return {
+        id,
+        name: str(item.nickname) ?? '未知歌手',
+        avatar: imageUrl(item.pic, 240),
+        addTime: num(item.addtime),
+      }
+    })
+    .filter((artist): artist is FollowedArtist => artist !== null)
 }
 
 /** 歌手专辑列表 */
